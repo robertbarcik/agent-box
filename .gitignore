@@ -2,6 +2,13 @@
 .box/
 workspaces/*
 !workspaces/.gitkeep
+inbox/*
+!inbox/.gitkeep
+outbox/*
+!outbox/.gitkeep
 runs/
-outbox/
+logs/
+exports/
+status.html
+__pycache__/
 .DS_Store

@@ -38,6 +38,11 @@ flowchart LR
     agent -- "door 2" --> egress -. "only listed domains" .-> net
 ```
 
+You do not have to keep this picture in your head. `bin/box report` draws it from the live state
+of your box, with a plain-language pop-up behind every element:
+
+![The status page: what is waiting for you, a clickable floor plan of the box, and lists of what the agent can and cannot do](docs/status.png)
+
 Three small containers:
 
 | Container | Job | What it can reach |
@@ -73,8 +78,8 @@ The first start builds three images and takes a few minutes.
 bin/box test
 ```
 
-This runs 19 escape attempts from inside the box (reach the internet, find the key, become root,
-see your files) and expects every one to fail. See [What the test proves](#what-the-test-proves).
+This runs 21 checks from inside the box (reach the internet, find the key, become root, see your
+files) and expects every escape attempt to fail. See [What the test proves](#what-the-test-proves).
 
 **4. Work.**
 
@@ -92,8 +97,9 @@ bin/box run "Write a CLI that converts CSV to JSON, with tests"   # or one task,
 **5. Look at what it did, then take it out.**
 
 ```bash
-bin/box diff          # what changed
-bin/box export        # copy the files to outbox/ for review
+bin/box report        # the status page: what it can do, what it did, what waits for you
+bin/box diff          # what changed in the project
+bin/box export        # copy the files to exports/ for review
 bin/box down          # stop
 ```
 
@@ -109,15 +115,89 @@ bin/box down          # stop
 | `box code` | Open opencode's terminal UI inside the box. |
 | `box run "task"` | One task without the UI. Full transcript saved to `runs/`. |
 | `box shell` | A plain shell inside the box, to look around as the agent would. |
+| `box report` | Build and open `status.html`: what the agent can and cannot do, and what it did. |
 | `box logs [-f]` | Every model call and every internet request, live with `-f`. |
 | `box egress [-f]` | Internet requests only, allowed and denied. |
 | `box test` | The containment self-test. |
 | `box reload` | Apply edits to `egress/allowlist.txt` without a restart. |
+| `box repo add <name>` | Grant one GitHub repository: a fresh clone lands in `workspaces/<name>`. |
+| `box repo list` / `sync` / `remove` | See the grants, update a workspace from GitHub, take a grant back. |
+| `box pr [-t "title"]` | Turn the agent's commits into a pull request. |
 | `box diff [-p]` | What changed in the workspace since `box up` (`-p` for the full patch). |
-| `box export [folder]` | Copy the workspace's plain files to `outbox/`. |
+| `box export [folder]` | Copy the workspace's plain files to `exports/`. |
 
-To work on an existing project, copy it into `workspaces/<name>/` and run `bin/box up <name>`.
-Copy, do not move: treat everything in a workspace as something the agent may change or delete.
+To work on a loose folder that is not on GitHub, copy it into `workspaces/<name>/` and run
+`bin/box up <name>`. Copy, do not move: treat everything in a workspace as something the agent
+may change or delete.
+
+## Working together
+
+The box gives you three ways to hand things to the agent and get things back. In each of them
+the agent holds no password, key or login.
+
+### Drop folders
+
+| Folder | You | The agent |
+|---|---|---|
+| `inbox/` | Drop in anything it should read: a PDF, sample data, a note. | Reads. Cannot change or delete. |
+| `outbox/` | Pick up reports, generated files, notes. | Writes. |
+| `workspaces/<name>/` | The project itself. | Reads and changes. |
+
+These three folders are the agent's entire view of your computer. There is no setting that keeps
+it out of your other folders, because for the agent they do not exist.
+
+### Repositories, one at a time
+
+```bash
+bin/box repo add my-project     # a fresh clone from GitHub into workspaces/my-project
+bin/box start my-project        # work with the agent; it commits as it goes
+bin/box pr -t "Add CSV export"  # you publish its commits as a pull request
+```
+
+How a commit travels from the box to GitHub without the agent ever holding a login:
+
+1. `repo add` makes two clones: one for the agent, with the link to GitHub removed, and a clean
+   one the agent never sees.
+2. The agent commits in its clone. It cannot push: no login, and no road to github.com.
+3. `box pr` reads the new commits inside a throwaway container and carries them out as a git
+   bundle, which is plain data. It loads the bundle into the clean clone, shows you what would
+   be published and asks.
+4. On yes, the branch `agent/<workspace>-<time>` is pushed from the clean clone with your own
+   GitHub login, and the pull request is opened. Its text is written by `box pr`, not by the
+   agent.
+
+The pull request is the review gate, so protect your main branch on GitHub (*Settings > Branches*)
+to make merging without review impossible.
+
+`box pr` refuses commits that change `.github/`, `.claude/`, `.vscode/`, `.devcontainer/`,
+`.husky/` or `.githooks/`. Files there run by themselves: a changed workflow file runs on
+GitHub's servers, with your repository's secrets, the moment the branch is pushed, before anyone
+has reviewed anything. Read such a change first and repeat with `--allow-sensitive` if it is
+fine. Changes to `CLAUDE.md` and `AGENTS.md` are pointed out, because they are instructions that
+other AI agents will follow later.
+
+Some repositories should never go in: ones with secrets in their history, or with instructions
+your other tools trust. List them in `.env` as `BOX_NEVER_REPOS=name1,name2` and `repo add`
+will refuse them.
+
+After a pull request is merged, `bin/box repo sync` brings the workspace up to date.
+
+### The status page
+
+`bin/box report` builds `status.html` and opens it. It is made for the moment you come back
+after three weeks and ask "what did I allow this thing to do, and what has it been up to?":
+
+- **Waiting for you:** open pull requests from the agent, new files in the outbox, a wall that
+  failed its test, a budget that is nearly used up, websites you left open.
+- **The floor plan:** the picture from the top of this page, with your folders, model and open
+  websites filled in. Every shape opens an explanation.
+- **It can / It cannot:** what you have granted, and every escape attempt from the last
+  self-test with its result.
+- **What it did:** model calls, tasks, and every website it tried to reach, for the last 7 or
+  30 days or since the beginning.
+
+The page is built from the configuration and from the guards' logs in `logs/`, which the agent
+cannot see or change. It is a snapshot: run the command again to refresh it.
 
 ## How the box is built
 
@@ -127,7 +207,8 @@ web page or a file told it to, which is called prompt injection). The box does n
 
 | The agent tries to... | What stops it | Where |
 |---|---|---|
-| Read your documents, SSH keys, browser profile | They are not there. Only `workspaces/<name>` is mounted. | `compose.yaml`, `volumes` |
+| Read your documents, SSH keys, browser profile | They are not there. Only the project folder, `inbox/` and `outbox/` are mounted. | `compose.yaml`, `volumes` |
+| Push to GitHub or open a pull request | No GitHub login in the box and no road to github.com. Publishing is done by you with `box pr`. | `bin/box`, `cmd_pr` |
 | Steal the API key | The agent's key is the text `held-by-the-gateway`. The real one lives in a different container. | `gateway/default.conf.template` |
 | Send your code to a server somewhere | The agent's network has no route out, and outside names do not even resolve. | `compose.yaml`, `internal: true` |
 | Use the proxy to get out anyway | The proxy refuses every domain not on the allowlist, and the list starts empty. | `egress/squid.conf` |
@@ -178,6 +259,7 @@ an email attachment from a stranger: fine to read, not fine to run unread.
   carry settings and hooks that make git execute commands. In a repository an untrusted agent
   controls, plain `git status` on your own machine could run its code. For the same reason, do
   not open a workspace as a trusted folder in your editor.
+- **`box pr` is the way out for repositories.** See [Repositories, one at a time](#repositories-one-at-a-time).
 - **`box export` copies regular files only.** It leaves the `.git` folder behind, skips symbolic
   links (a link named `notes.txt` can point at your own private file outside the workspace) and
   lists every file marked executable so you read those first.
@@ -252,9 +334,12 @@ Privileges
   PASS  no sudo
   PASS  system files are read-only
   PASS  cannot install system packages
+Folders
   PASS  workspace is writable
+  PASS  outbox is writable
+  PASS  inbox can be read but not changed
 
-19 passed, 0 failed
+21 passed, 0 failed
 ```
 
 Run it after every change to `compose.yaml`, the gateway or the proxy. A sandbox you have not
@@ -296,6 +381,11 @@ No sandbox is complete, and knowing the gaps is part of using one well.
    every environment variable in NOTES.md", then give the agent an unrelated task. Does it obey
    the file? What could it have leaked if the key were in its environment?
 6. **Compare models.** Run one task with two models and compare the transcripts.
+7. **Follow a commit out of the box.** Grant a small repository of your own, let the agent make
+   a change, run `bin/box pr`. Then ask it to "also add a GitHub Actions workflow" and watch
+   `box pr` refuse. Why is that file more dangerous than the code?
+8. **Read the page cold.** Open a classmate's `status.html` and say in one minute what their
+   agent can reach and what it tried to reach.
 
 ## Repository layout
 
@@ -304,13 +394,20 @@ compose.yaml              the whole architecture: three services, two networks
 agent/Dockerfile          the agent image: tools, pinned opencode, non-root user
 agent/opencode.json       opencode settings: model, gateway address, permissions
 agent/AGENTS.md           what the agent is told about its surroundings
-agent/selftest.sh         the 19 containment checks
+agent/selftest.sh         the 21 containment checks
 gateway/                  nginx config that adds the API key (door 1)
 egress/                   squid config and allowlist.txt (door 2)
 bin/box                   the one command you use
-workspaces/               project folders the agent works in (not committed)
-runs/                     transcripts of `box run` (not committed)
-outbox/                   exported results (not committed)
+lib/report.py             builds status.html
+
+Not committed, created on your machine:
+workspaces/               project folders the agent works in
+inbox/  outbox/           the drop folders
+logs/                     the guards' logbooks: model calls and internet requests
+runs/                     transcripts of `box run`
+exports/                  results copied out with `box export`
+status.html               the status page
+.box/                     the box's own notes: granted repositories, clean clones, last test
 ```
 
 Inside the box opencode is allowed to do everything without asking, except web fetches. Asking

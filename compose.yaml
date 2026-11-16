@@ -30,8 +30,10 @@ services:
       NO_PROXY: gateway,localhost,127.0.0.1
       no_proxy: gateway,localhost,127.0.0.1
     volumes:
-      # The only piece of your computer the agent can see.
-      - ./workspaces/${BOX_WORKSPACE:-default}:/workspace
+      # These three folders are everything of your computer the agent can see.
+      - ./workspaces/${BOX_WORKSPACE:-default}:/workspace   # the project it works on
+      - ./inbox:/inbox:ro                                    # you drop things in; it can only read
+      - ./outbox:/outbox                                     # it leaves things for you
       # The agent's own home (sessions, caches). Lives in Docker, not on your disk.
       - home:/home/agent
     tmpfs:
@@ -51,6 +53,9 @@ services:
     image: agent-box/gateway
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    volumes:
+      # The guards write their logbooks here. The agent cannot see this folder.
+      - ./logs:/box-logs
     networks: [inside, outside]
     restart: unless-stopped
 
@@ -61,6 +66,7 @@ services:
       # The folder, not the single file: editors replace a file when saving,
       # and a single-file mount would keep pointing at the old one.
       - ./egress:/box-egress:ro
+      - ./logs:/box-logs
     networks: [inside, outside]
     restart: unless-stopped
 

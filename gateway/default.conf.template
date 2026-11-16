@@ -8,7 +8,7 @@ log_format box '$time_iso8601 $request_method $uri status=$status '
 
 server {
     listen 8080;
-    access_log /dev/stdout box;
+    access_log /box-logs/gateway.log box;
 
     # Docker's internal DNS; re-resolve the provider every 5 minutes.
     resolver 127.0.0.11 valid=300s ipv6=off;

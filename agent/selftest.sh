@@ -40,7 +40,11 @@ check "not running as root"                        ok test "$(id -u)" != "0"
 check "no sudo"                                    blocked sudo -n true
 check "system files are read-only"                 blocked touch /usr/local/bin/x
 check "cannot install system packages"             blocked apt-get install -y cowsay
+
+echo "Folders"
 check "workspace is writable"                      ok sh -c 'touch /workspace/.box-selftest && rm /workspace/.box-selftest'
+check "outbox is writable"                         ok sh -c 'touch /outbox/.box-selftest && rm /outbox/.box-selftest'
+check "inbox can be read but not changed"          blocked touch /inbox/.box-selftest
 
 echo
 echo "$pass passed, $fail failed"

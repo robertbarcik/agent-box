@@ -23,7 +23,8 @@ box: a coding agent in a sandbox
     box run "task"         give it one task without the UI; transcript saved in runs/
     box shell              a plain shell inside the box
 
-  Watch it
+  See what it can do and what it did
+    box report             build status.html: what the agent can and cannot do, what it did
     box logs [-f]          every model call and every internet request
     box egress [-f]        internet requests only (allowed and denied)
     box test               containment self-test: tries to break out, expects to fail
@@ -31,9 +32,20 @@ box: a coding agent in a sandbox
   Open or close doors
     box reload             apply changes made to egress/allowlist.txt
 
+  Repositories, one at a time
+    box repo add <name>    grant one GitHub repository (fresh clone into workspaces/<name>)
+    box repo list          which repositories are granted
+    box repo sync [name]   bring the workspace up to date with GitHub
+    box repo remove <name> take the grant back
+    box pr [-t "title"]    turn the agent's commits into a pull request for you to review
+
   Take results out
     box diff [-p]          what changed in the workspace since "box up" (-p: full patch)
-    box export [folder]    copy the workspace's plain files to outbox/ for review
+    box export [folder]    copy the workspace's plain files to exports/ for review
+
+  Folders you share with the agent
+    inbox/                 you drop things here; the agent can read, not change
+    outbox/                the agent leaves things here for you
 EOF
 }
 
@@ -43,29 +55,39 @@ compose() { docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" "
 
 current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
 
+valid_name() {
+  case "$1" in
+    ""|.*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+env_value() {  # env_value KEY -> value from .env, empty if missing
+  [ -f "$ROOT/.env" ] || return 0
+  grep -E "^$1=" "$ROOT/.env" | tail -n 1 | cut -d= -f2- || true
+}
+
 need_running() {
   [ -n "$(compose ps -q --status running agent 2>/dev/null)" ] || die "the box is not running. Start it with: box up"
 }
 
-# A fresh, throwaway container with no network that sees the workspace read-only.
+# A fresh, throwaway container with no network that sees a workspace read-only.
 # Used to look at what the agent produced without running anything of it on the host.
 inspector() {
-  docker run --rm -i --network none --read-only --cap-drop ALL \
+  docker run --rm --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges:true --tmpfs /tmp \
     -v "$ROOT/workspaces/$(current_ws):/workspace:ro" \
-    -w /workspace agent-box/agent "$@"
+    -w /workspace agent-box/agent "$@" </dev/null
 }
 
 cmd_up() {
   local ws="${1:-$(current_ws)}"
-  case "$ws" in
-    ""|.*|*[!A-Za-z0-9._-]*) die "workspace names use letters, digits, dot, dash, underscore" ;;
-  esac
-  mkdir -p "$STATE" "$ROOT/workspaces/$ws"
+  valid_name "$ws" || die "workspace names use letters, digits, dot, dash, underscore"
+  mkdir -p "$STATE" "$ROOT/workspaces/$ws" "$ROOT/inbox" "$ROOT/outbox" "$ROOT/logs"
   echo "$ws" > "$WS_FILE"
 
   [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
-  if ! grep -Eq '^OPENROUTER_API_KEY=.+' "$ROOT/.env"; then
+  if [ -z "$(env_value OPENROUTER_API_KEY)" ]; then
     echo "note: no OPENROUTER_API_KEY in .env yet. The box starts, but the model will answer 401."
   fi
 
@@ -96,7 +118,11 @@ cmd_run() {
   need_running
   [ $# -ge 1 ] || die 'usage: box run "task for the agent"'
   mkdir -p "$ROOT/runs"
-  local out="$ROOT/runs/$(date +%Y%m%d-%H%M%S)-$(current_ws).jsonl"
+  local stamp out
+  stamp="$(date +%Y%m%d-%H%M%S)-$(current_ws)"
+  out="$ROOT/runs/$stamp.jsonl"
+  # What was asked and of which model, next to the transcript.
+  { compose exec -T agent sh -c 'echo "$BOX_MODEL"'; printf '%s\n' "$*"; } > "$ROOT/runs/$stamp.task.txt"
   # --auto: do not stop to ask for permission. The box is the permission system.
   compose exec -T agent opencode run --auto --format json "$@" | tee "$out" | summarize
   echo
@@ -126,6 +152,34 @@ for line in sys.stdin:
 ' 2>/dev/null || cat
 }
 
+cmd_test() {
+  need_running
+  mkdir -p "$STATE"
+  local tmp="$STATE/last-test.tmp" rc=0
+  echo "# $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmp"
+  local started; started="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  compose exec -T agent /opt/agent-box/selftest.sh | tee -a "$tmp" || rc=$?
+  mv "$tmp" "$STATE/last-test.txt"
+  # The test knocks on doors on purpose. Remember when, so the report can tell
+  # its attempts apart from the agent's.
+  sleep 1
+  echo "$started $(date -u +%Y-%m-%dT%H:%M:%S)" >> "$STATE/test-windows"
+  return $rc
+}
+
+cmd_logs() {  # cmd_logs <which: all|egress> [-f]
+  local which="$1"; shift
+  local files="$ROOT/logs/egress.log"
+  mkdir -p "$ROOT/logs"; touch "$ROOT/logs/egress.log" "$ROOT/logs/gateway.log"
+  if [ "${1:-}" = "-f" ]; then
+    if [ "$which" = all ]; then tail -n 10 -f "$ROOT/logs/gateway.log" "$ROOT/logs/egress.log"
+    else tail -n 20 -f "$files"; fi
+  else
+    if [ "$which" = all ]; then cat "$ROOT/logs/gateway.log" "$ROOT/logs/egress.log" | sort | tail -n 40
+    else tail -n 40 "$files"; fi
+  fi
+}
+
 cmd_diff() {
   local ws base; ws="$(current_ws)"
   [ -f "$STATE/baseline-$ws" ] || die "no baseline for workspace \"$ws\". Run: box up"
@@ -143,7 +197,7 @@ cmd_diff() {
 
 cmd_export() {
   local ws dest; ws="$(current_ws)"
-  dest="${1:-$ROOT/outbox/$ws-$(date +%Y%m%d-%H%M%S)}"
+  dest="${1:-$ROOT/exports/$ws-$(date +%Y%m%d-%H%M%S)}"
   [ ! -e "$dest" ] || die "$dest already exists"
   mkdir -p "$dest"
   # Regular files only: no .git folder, no symlinks, no devices.
@@ -157,6 +211,201 @@ cmd_export() {
   if [ -n "$execs" ]; then echo "Marked executable (read before you run):"; echo "$execs"; fi
 }
 
+# ---------------------------------------------------------------- repositories
+#
+# One repository = one grant. For each granted repository we keep, outside the
+# agent's reach, in .box/repos/<name>/:
+#   clean/    a clone the agent never touches; pull requests are pushed from here
+#   full      owner/name on GitHub
+#   default   the default branch
+#   known     commits GitHub already has; a pull request carries what comes after
+
+repo_dir() { echo "$STATE/repos/$1"; }
+
+is_sha() { case "$1" in *[!0-9a-f]*|"") return 1 ;; esac; [ ${#1} -eq 40 ]; }
+
+cmd_repo_add() {
+  [ $# -eq 1 ] || die "usage: box repo add <name>   (or owner/name)"
+  command -v gh >/dev/null || die "the GitHub CLI (gh) is needed for repositories: https://cli.github.com"
+  local spec="$1" name d never n
+  name="${spec##*/}"
+  valid_name "$name" || die "not a usable repository name: $name"
+
+  never="$(env_value BOX_NEVER_REPOS)"
+  local IFS_OLD="$IFS"; IFS=','
+  for n in $never; do
+    n="$(echo "$n" | tr -d ' ')"
+    if [ "$n" = "$name" ]; then IFS="$IFS_OLD"; die "\"$name\" is on your never-grant list (BOX_NEVER_REPOS in .env)"; fi
+  done
+  IFS="$IFS_OLD"
+
+  d="$(repo_dir "$name")"
+  [ ! -e "$d" ] || die "\"$name\" is already granted"
+  [ ! -e "$ROOT/workspaces/$name" ] || die "workspaces/$name already exists; move it away first"
+
+  mkdir -p "$d"
+  if ! gh repo clone "$spec" "$d/clean" -- --quiet; then
+    rmdir "$d" 2>/dev/null || true
+    die "could not clone $spec"
+  fi
+  git -C "$d/clean" remote get-url origin | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##' > "$d/full"
+  git -C "$d/clean" symbolic-ref --short HEAD > "$d/default"
+  git -C "$d/clean" rev-parse HEAD > "$d/known"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$d/added"
+
+  # The agent's copy: same history, but no link back to GitHub and no credentials.
+  git clone --quiet --no-hardlinks "$d/clean" "$ROOT/workspaces/$name"
+  git -C "$ROOT/workspaces/$name" remote remove origin
+
+  echo "Granted: $(cat "$d/full") -> workspaces/$name"
+  echo "The agent can read and change this copy. It cannot push."
+  echo "Next: box start $name"
+}
+
+cmd_repo_list() {
+  local d any=0
+  for d in "$STATE"/repos/*/; do
+    [ -f "$d/full" ] || continue
+    any=1
+    printf '%-28s %-36s granted %s\n' "workspaces/$(basename "$d")" "$(cat "$d/full")" "$(cut -c1-10 "$d/added")"
+  done
+  [ $any -eq 1 ] || echo "No repositories granted. Grant one with: box repo add <name>"
+}
+
+cmd_repo_sync() {
+  local name="${1:-$(current_ws)}" d default sha
+  d="$(repo_dir "$name")"
+  [ -f "$d/full" ] || die "\"$name\" is not a granted repository"
+  default="$(cat "$d/default")"
+  git -C "$d/clean" fetch --quiet origin
+  sha="$(git -C "$d/clean" rev-parse "origin/$default")"
+  grep -q "$sha" "$d/known" || echo "$sha" >> "$d/known"
+
+  # Git on the agent's copy only ever runs inside a container.
+  if docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
+      -v "$ROOT/workspaces/$name:/workspace" -v "$d/clean:/clean:ro" -w /workspace \
+      agent-box/agent sh -c '
+        git -c safe.directory="*" fetch -q /clean "refs/remotes/origin/$1:refs/remotes/upstream/$1" &&
+        git merge -q --ff-only "upstream/$1"' sh "$default"; then
+    echo "workspaces/$name is up to date with $(cat "$d/full") ($default)."
+  else
+    echo "GitHub's $default was fetched as upstream/$default, but the workspace has its own commits on top."
+    echo "Decide in 'box shell':   git rebase upstream/$default      keep the agent's commits"
+    echo "                         git reset --hard upstream/$default  drop them (e.g. after a merged pull request)"
+  fi
+}
+
+cmd_repo_remove() {
+  [ $# -eq 1 ] || die "usage: box repo remove <name>"
+  local name="$1" d
+  valid_name "$name" || die "not a usable repository name: $name"
+  d="$(repo_dir "$name")"
+  [ -f "$d/full" ] || die "\"$name\" is not a granted repository"
+  rm -rf "$d"
+  echo "Grant removed. No pull requests can be opened from workspaces/$name any more."
+  echo "The folder workspaces/$name is still on disk; delete it yourself when you no longer need it."
+}
+
+cmd_pr() {
+  local title="" yes=0 allow=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -t) title="${2:-}"; shift 2 ;;
+      -y) yes=1; shift ;;
+      --allow-sensitive) allow=1; shift ;;
+      *) die 'usage: box pr [-t "title"] [-y] [--allow-sensitive]' ;;
+    esac
+  done
+  local ws d full default known not head count dirty branch bundle mb files blocked instr
+  ws="$(current_ws)"; d="$(repo_dir "$ws")"
+  [ -f "$d/full" ] || die "workspace \"$ws\" is not a granted repository (see: box repo add)"
+  full="$(cat "$d/full")"; default="$(cat "$d/default")"
+
+  not=""
+  for known in $(cat "$d/known"); do is_sha "$known" && not="$not ^$known"; done
+
+  # 1. Read the agent's commits inside a throwaway container.
+  head="$(inspector git rev-parse HEAD)"
+  is_sha "$head" || die "could not read the workspace's HEAD"
+  # shellcheck disable=SC2086
+  count="$(inspector git rev-list --count HEAD $not)"
+  case "$count" in ""|*[!0-9]*) die "could not count the new commits" ;; esac
+  [ "$count" -gt 0 ] || die "the agent has made no new commits in workspaces/$ws"
+  dirty="$(inspector git --no-optional-locks status --porcelain | wc -l | tr -d ' ')"
+
+  # 2. Carry them out as plain data (a git bundle) into the clean clone.
+  branch="agent/$ws-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$STATE/tmp"; bundle="$STATE/tmp/$ws.bundle"
+  # shellcheck disable=SC2086
+  inspector git bundle create - HEAD $not > "$bundle" 2>/dev/null
+  git -C "$d/clean" fetch --quiet origin
+  git -C "$d/clean" -c fetch.fsckObjects=true fetch --quiet "$bundle" "HEAD:refs/heads/$branch"
+  rm -f "$bundle"
+  [ "$(git -C "$d/clean" rev-parse "$branch")" = "$head" ] || die "the carried-out commits do not match the workspace"
+
+  # 3. Refuse changes to files that run by themselves once they are on GitHub or on your machine.
+  mb="$(git -C "$d/clean" merge-base "$branch" "origin/$default")"
+  files="$(git -C "$d/clean" diff --name-only "$mb" "$branch")"
+  blocked="$(printf '%s\n' "$files" | grep -E '^"?(\.github|\.claude|\.vscode|\.devcontainer|\.husky|\.githooks)/' || true)"
+  instr="$(printf '%s\n' "$files" | grep -E '(^|/)(CLAUDE\.md|AGENTS\.md|\.cursorrules)"?$' || true)"
+  if [ -n "$blocked" ] && [ $allow -eq 0 ]; then
+    git -C "$d/clean" branch -q -D "$branch"
+    echo "Refused. These files run automatically (CI workflows, editor and agent settings):" >&2
+    printf '%s\n' "$blocked" | sed 's/^/  /' >&2
+    die "read them first; if they are fine, repeat with --allow-sensitive"
+  fi
+
+  # 4. Show what would be published and ask.
+  echo "Pull request for $full"
+  echo "  branch:  $branch  ->  $default"
+  echo "  commits: $count"
+  git -C "$d/clean" --no-pager diff --stat "$mb" "$branch" | sed 's/^/  /'
+  [ "$dirty" = 0 ] || echo "  note: $dirty changed file(s) in the workspace are not committed and are NOT included"
+  if [ -n "$instr" ]; then
+    echo "  note: instruction files for AI agents changed; read them with extra care:"
+    printf '%s\n' "$instr" | sed 's/^/    /'
+  fi
+  if [ $yes -eq 0 ]; then
+    printf 'Push this branch and open the pull request? [y/N] '
+    local answer=""; read -r answer || true
+    case "$answer" in y|Y|yes) ;; *) git -C "$d/clean" branch -q -D "$branch"; die "nothing was pushed" ;; esac
+  fi
+
+  # 5. Push from the clean clone and open the pull request. The text is written here,
+  #    not by the agent; its commit subjects are quoted inside a code block.
+  [ -n "$title" ] || title="agent-box: $count commit(s) from workspace $ws"
+  local body="$STATE/tmp/$ws.pr.md" url
+  {
+    echo "Opened with [agent-box](https://github.com/robertbarcik/agent-box) from commits made by a sandboxed coding agent."
+    echo
+    echo "- Model: \`$(env_value BOX_MODEL)\`"
+    echo "- Commits: $count"
+    echo "- The agent had no access to GitHub. A human ran \`box pr\`."
+    echo
+    echo "**Review before merging.** Treat this like a contribution from a stranger."
+    echo
+    echo '```text'
+    git -C "$d/clean" --no-pager log --format='%h %s' "$mb..$branch" | tr -d '`' | sed 's/@/(at)/g'
+    echo '```'
+  } > "$body"
+  git -C "$d/clean" push --quiet origin "$branch"
+  url="$(gh pr create --repo "$full" --base "$default" --head "$branch" --title "$title" --body-file "$body")"
+  rm -f "$body"
+  echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $full $branch $url" >> "$STATE/prs.log"
+  echo "Opened: $url"
+}
+
+cmd_repo() {
+  local sub="${1:-list}"; [ $# -gt 0 ] && shift
+  case "$sub" in
+    add)    cmd_repo_add "$@" ;;
+    list)   cmd_repo_list ;;
+    sync)   cmd_repo_sync "$@" ;;
+    remove) cmd_repo_remove "$@" ;;
+    *)      die "usage: box repo add|list|sync|remove" ;;
+  esac
+}
+
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   up)      cmd_up "$@" ;;
@@ -167,10 +416,13 @@ case "$cmd" in
   code)    need_running; compose exec agent opencode "$@" ;;
   run)     cmd_run "$@" ;;
   shell)   need_running; compose exec agent bash ;;
-  logs)    compose logs --no-log-prefix "$@" gateway egress ;;
-  egress)  compose logs --no-log-prefix "$@" egress ;;
-  test)    need_running; compose exec -T agent /opt/agent-box/selftest.sh ;;
+  report)  python3 "$ROOT/lib/report.py" "$@" ;;
+  logs)    cmd_logs all "$@" ;;
+  egress)  cmd_logs egress "$@" ;;
+  test)    cmd_test ;;
   reload)  compose exec -T egress squid -k reconfigure && echo "allowlist reloaded" ;;
+  repo)    cmd_repo "$@" ;;
+  pr)      cmd_pr "$@" ;;
   diff)    cmd_diff "$@" ;;
   export)  cmd_export "$@" ;;
   help|-h|--help) usage ;;
