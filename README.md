@@ -83,6 +83,12 @@ bin/box code                                   # the agent's own terminal UI
 bin/box run "Write a CLI that converts CSV to JSON, with tests"   # or one task, no UI
 ```
 
+`bin/box start` does `up` and `code` in one step.
+
+> **`box` commands run on your computer, not inside the agent.** While opencode is open you are
+> inside the box, and `bin/box` does not exist there: nothing inside the box can stop or
+> reconfigure it. Leave opencode with `/exit` first, or use a second terminal tab.
+
 **5. Look at what it did, then take it out.**
 
 ```bash
@@ -95,6 +101,7 @@ bin/box down          # stop
 
 | Command | What it does |
 |---|---|
+| `box start [workspace]` | Start the box and open opencode in it (`up` + `code`). |
 | `box up [workspace]` | Build if needed and start. Each workspace is a folder under `workspaces/`. |
 | `box down` | Stop. The agent's sessions are kept. |
 | `box reset` | Stop and wipe the agent's home (sessions, caches). Workspaces stay. |

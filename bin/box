@@ -12,6 +12,7 @@ usage() {
 box: a coding agent in a sandbox
 
   Start and stop
+    box start [workspace]  start the box and open the agent's terminal UI (up + code)
     box up [workspace]     build if needed and start the box (default workspace: "default")
     box down               stop the box (the agent's sessions are kept)
     box reset              stop the box and wipe the agent's home (sessions, caches)
@@ -159,6 +160,7 @@ cmd_export() {
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   up)      cmd_up "$@" ;;
+  start)   cmd_up "$@"; compose exec agent opencode ;;
   down)    compose down ;;
   reset)   compose down -v; echo "Agent home wiped. Workspaces on disk are untouched." ;;
   status)  cmd_status ;;
