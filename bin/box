@@ -14,6 +14,7 @@ box: a coding agent in a sandbox
   Start and stop
     box start [workspace]  start the box and open the agent's terminal UI (up + code)
     box up [workspace]     build if needed and start the box (default workspace: "default")
+                           (BOX_DEVICE=1 DEVICE_PATH=/Volumes/X box up ... mounts one device as /device)
     box down               stop the box (the agent's sessions are kept)
     box reset              stop the box and wipe the agent's home (sessions, caches)
     box status             what is running, which workspace, which model
@@ -52,7 +53,20 @@ EOF
 
 die() { echo "box: $*" >&2; exit 1; }
 
-compose() { docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" "$@"; }
+# Device mode (an opt-in mount of one plugged-in device, and nothing else) is remembered in
+# .box/device so every compose call in a session agrees on it. BOX_DEVICE in the environment
+# overrides the remembered value; the device's host path is remembered in .box/device-path so
+# later compose calls (status, run) resolve it without needing DEVICE_PATH in their environment.
+device_on() { [ "${BOX_DEVICE:-$(cat "$STATE/device" 2>/dev/null || echo 0)}" = 1 ]; }
+
+compose() {
+  local df=()
+  if device_on; then
+    export DEVICE_PATH="${DEVICE_PATH:-$(cat "$STATE/device-path" 2>/dev/null)}"
+    df=( -f "$ROOT/compose.device.yaml" )
+  fi
+  docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" ${df[@]+"${df[@]}"} "$@"
+}
 
 current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
 
@@ -101,6 +115,14 @@ cmd_up() {
   valid_name "$ws" || die "workspace names use letters, digits, dot, dash, underscore"
   mkdir -p "$STATE" "$ROOT/workspaces/$ws" "$ROOT/inbox" "$ROOT/outbox" "$ROOT/logs"
   echo "$ws" > "$WS_FILE"
+  # Remember whether this box was brought up with a device mounted, before any compose call.
+  echo "${BOX_DEVICE:-0}" > "$STATE/device"
+  if device_on; then
+    [ -n "${DEVICE_PATH:-}" ] || die "Device mode is on but DEVICE_PATH is not set. Pass DEVICE_PATH=/Volumes/<name> (the mounted device), or run without BOX_DEVICE=1."
+    [ -d "$DEVICE_PATH" ] || die "Device mode is on but $DEVICE_PATH is not there. Plug the device in (it must be mounted), or run without BOX_DEVICE=1."
+    echo "$DEVICE_PATH" > "$STATE/device-path"
+    echo "Device mode: mounting $DEVICE_PATH as /device (that device's storage only)."
+  fi
 
   [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
   if [ -z "$(env_value OPENROUTER_API_KEY)" ]; then
@@ -127,6 +149,7 @@ cmd_status() {
   echo "workspace: workspaces/$(current_ws)"
   if [ -n "$(compose ps -q --status running agent 2>/dev/null)" ]; then
     compose exec -T agent sh -c 'echo "model:     $BOX_MODEL"; echo "opencode:  $(opencode --version)"'
+    compose exec -T agent sh -c '[ -d /device ] && echo "device:    a device is mounted at /device (host storage, read-write)"' 2>/dev/null || true
   fi
 }
 

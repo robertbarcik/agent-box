@@ -1,0 +1,19 @@
+# Optional override: give the agent one device, and only that device.
+#
+# This is a deliberate widening. It mounts one plugged-in device's storage into the agent, so the
+# agent can read and write the files on that device. It adds nothing else: no other part of your
+# computer, no network, no second device. The rest of the box (no internet, no secrets, no home
+# folder, no root) is exactly as it was; `bin/box test` still proves that.
+#
+# Turn it on only at start, with the device plugged in and mounted:
+#     BOX_DEVICE=1 DEVICE_PATH=/Volumes/<name> bin/box up <workspace>
+# A plain `bin/box up` leaves it off. The device appears as /device inside the box.
+#
+# Note: this mounts a device's *storage* and nothing more. If the device is something like an
+# e-reader in USB drive mode, its own screen and OS are suspended while it is mounted -- so this
+# is for reading the device and staging files onto it, not for driving the device live.
+
+services:
+  agent:
+    volumes:
+      - ${DEVICE_PATH:?set DEVICE_PATH to the mounted device, e.g. /Volumes/MyDisk}:/device

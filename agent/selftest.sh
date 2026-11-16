@@ -45,6 +45,7 @@ echo "Folders"
 check "workspace is writable"                      ok sh -c 'touch /workspace/.box-selftest && rm /workspace/.box-selftest'
 check "outbox is writable"                         ok sh -c 'touch /outbox/.box-selftest && rm /outbox/.box-selftest'
 check "inbox can be read but not changed"          blocked touch /inbox/.box-selftest
+check "no device is mounted unless opted in"       blocked test -e /device
 
 echo
 echo "$pass passed, $fail failed"

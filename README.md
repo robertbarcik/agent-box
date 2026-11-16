@@ -87,7 +87,7 @@ The first start builds three images and takes a few minutes.
 bin/box test
 ```
 
-This runs 21 checks from inside the box (reach the internet, find the key, become root, see your
+This runs 22 checks from inside the box (reach the internet, find the key, become root, see your
 files) and expects every escape attempt to fail. See [What the test proves](#what-the-test-proves).
 
 **4. Work.**
@@ -336,6 +336,39 @@ provider), so it is a channel out; a search runs on every model call while it is
 little to the bill; and whatever the web returns is untrusted text the model now reads, so weigh
 its answers accordingly. Use it for fact-checking during research, not as a standing default.
 
+### An optional third door: one device
+
+Sometimes a task needs a real device the box cannot otherwise see — a USB disk, an e-reader in
+drive mode, a camera card. `compose.device.yaml` mounts exactly one, opt-in and per run:
+
+```bash
+BOX_DEVICE=1 DEVICE_PATH=/Volumes/MyDisk bin/box up myproject
+```
+
+The device appears inside the box as `/device`, read-write. Nothing else changes: no second
+device, and above all no network — the egress allowlist, the gateway and every `box test` check
+are exactly as they were, because mounting storage never touches the agent's network. A plain
+`bin/box up` leaves the door shut, and the `no device is mounted unless opted in` check proves it.
+
+The mount is the host's real storage, not a copy, so the agent's writes land on the device: treat
+it the way you treat the workspace. And a device usually carries more than the files this task
+needs — look at what is on it before you hand it over.
+
+### Opening a door for one task, then closing it
+
+The two doors and the device mount are the whole width of what the box can reach, and they share
+one shape: **shut by default, opened by a person for a named task, closed again after.** The box
+starts with no internet, no device, and only the model. For a task that needs packages you
+uncomment two lines in the allowlist; for one that needs a current fact you add `--web`; for one
+that needs a USB disk you set `BOX_DEVICE=1` — each the smallest opening that lets the task run,
+and each easy to undo.
+
+This is the rhythm the whole arrangement is built around (see [A trusted assistant as
+supervisor](#a-trusted-assistant-as-supervisor)): opening a door always waits for a person,
+closing one never does, so the safe move is cheap and the risky move is deliberate. When the task
+is done, put the box back to its closed default — comment the domains out again, drop `--web`,
+bring the box up without `BOX_DEVICE` — and the next task starts from the same tight floor.
+
 ## Getting work out safely
 
 The workspace is the one thing the agent writes that also exists on your computer. Treat it like
@@ -424,8 +457,9 @@ Folders
   PASS  workspace is writable
   PASS  outbox is writable
   PASS  inbox can be read but not changed
+  PASS  no device is mounted unless opted in
 
-21 passed, 0 failed
+22 passed, 0 failed
 ```
 
 Run it after every change to `compose.yaml`, the gateway or the proxy. A sandbox you have not
@@ -472,15 +506,21 @@ No sandbox is complete, and knowing the gaps is part of using one well.
    `box pr` refuse. Why is that file more dangerous than the code?
 8. **Read the page cold.** Open a classmate's `status.html` and say in one minute what their
    agent can reach and what it tried to reach.
+9. **Mount a device, and only that device.** Plug in a USB stick, then `BOX_DEVICE=1
+   DEVICE_PATH=/Volumes/<name> bin/box up`. From inside (`bin/box shell`) confirm you can read
+   and write `/device` but still cannot reach the internet or see any other disk, and that
+   `bin/box test` reports the device door as the one opening. Bring the box up again without
+   `BOX_DEVICE` and watch `/device` disappear.
 
 ## Repository layout
 
 ```text
 compose.yaml              the whole architecture: three services, two networks
+compose.device.yaml       optional override: mount one device as /device (opt-in, per run)
 agent/Dockerfile          the agent image: tools, pinned opencode, non-root user
 agent/opencode.json       opencode settings: model, gateway address, permissions
 agent/AGENTS.md           what the agent is told about its surroundings
-agent/selftest.sh         the 21 containment checks
+agent/selftest.sh         the 22 containment checks
 gateway/                  nginx config that adds the API key (door 1)
 egress/                   squid config and allowlist.txt (door 2)
 bin/box                   the one command you use
