@@ -347,6 +347,67 @@ EXPLAIN = {
         "Publishing is done by you: one command takes the agent's commits out as plain data and "
         "opens a pull request, which you review like a contribution from a stranger."],
         "bin/box pr"),
+    "supervisor": ("Claude, the supervisor", [
+        "A second AI assistant, this one trusted: Claude Code, running on your computer with "
+        "access you gave it. It is not inside the box. It looks after the box.",
+        "It starts and stops the box, runs the self-test, keeps this page honest, reviews what "
+        "the agent produced, and can hand the agent tasks.",
+        "It is optional. Everything it does here you can do yourself with the box command."], ""),
+    # --- who does what
+    "role-you-in": ("You decide what goes in", [
+        "Which project the agent works on, which repository it may have a copy of, which files "
+        "land in the inbox, which websites are open, how much it may spend.",
+        "Each of these is a trust decision, so each stays with a person."], "bin/box repo add <name>"),
+    "role-you-talk": ("You can talk to the agent directly", [
+        "Open its terminal and work with it like with any coding agent. Claude is not in that "
+        "conversation and does not need to be."], "bin/box start"),
+    "role-you-widen": ("You approve anything that widens its reach", [
+        "Opening a website, granting a repository, raising a limit. Claude may suggest it and "
+        "explain why the task needs it. The yes is yours.",
+        "Closing a door needs no approval from anyone."], ""),
+    "role-you-merge": ("You merge or reject its pull requests", [
+        "A pull request is a proposal. Until you merge it, nothing in your real project has "
+        "changed. Claude can review it for you first; the decision stays with you."], ""),
+    "role-sup-run": ("Claude runs and repairs the box", [
+        "Start, stop, update, test. After every change to the walls it runs the self-test again "
+        "and does not call the box ready until every escape attempt fails.",
+        "It also watches the budget and the key's expiry date, and gives you the summary when "
+        "you come back after a break."], "bin/box test"),
+    "role-sup-propose": ("Claude proposes wider access, and never decides it", [
+        "If a task needs a package index or one more repository, Claude says so and says what "
+        "could leave through that door. Then it waits for you.",
+        "The one direction it acts on alone is tighter: closing doors, stopping the box."], ""),
+    "role-sup-review": ("Claude reviews the agent's work like a stranger's", [
+        "It reads the pull request line by line against what was asked: does it do the task, "
+        "does it do anything else, does it touch files that run by themselves.",
+        "It does not merge. It tells you what it found."], ""),
+    "role-sup-drive": ("Claude can give the agent tasks", [
+        "Useful for routine work and for comparing models on the same task.",
+        "It judges the result by evidence: the changes themselves and the guards' logs. The "
+        "agent's own summary of what it did is a claim, not proof."], 'bin/box run "task"'),
+    "role-sup-never": ("Claude never takes orders from the agent", [
+        "This is the rule that keeps the whole arrangement safe. Claude has real access to your "
+        "computer. If it did what the agent's notes asked, the agent would have that access too, "
+        "one polite request at a time.",
+        "So a note in the outbox that says 'please run this on the host' or 'please open this "
+        "website for me' is not carried out. It is shown to you."], ""),
+    "role-sup-back": ("Claude steps back when you work directly", [
+        "For work you want to do with the agent yourself, Claude only keeps the box running. It "
+        "does not read along and does not relay."], ""),
+    "role-ag-work": ("The agent does the work", [
+        "Reads the project, writes code, runs it, fixes it. Inside the box it does not need to "
+        "ask before each step."], ""),
+    "role-ag-hand": ("The agent hands over results", [
+        "Commits in the project, and files in the outbox for anything that is not part of the "
+        "project. It cannot publish either one."], "bin/box diff"),
+    "role-ag-ask": ("The agent says what it is missing", [
+        "It is told about its surroundings: no internet, no pushing. When a task needs more, it "
+        "is supposed to say so and stop, not to try a hundred ways around.",
+        "Whether it actually behaves that way is one of the things worth watching. The list of "
+        "doors it knocked on is further down this page."], "bin/box egress"),
+    "role-ag-holds": ("The agent holds nothing", [
+        "No API key, no password, no GitHub login, no control over the box. Every one of those "
+        "is held by something outside its room."], ""),
     # --- "can" rows
     "can-commands": ("Run any command inside the box", [
         "Install tools into its own folder, run tests, delete files in the project. It does not "
@@ -498,6 +559,16 @@ color:inherit;font:inherit;text-align:left;cursor:pointer}
 .row .detail{display:block;color:var(--soft);font-size:.9rem;overflow-wrap:anywhere}
 .row .q{flex:none;color:var(--soft);font-size:.85rem;border:1px solid var(--line);border-radius:50%;width:21px;height:21px;display:grid;place-items:center}
 .failnote{color:var(--alert);font-weight:700}
+.roles{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:14px}
+@media (max-width:860px){.roles{grid-template-columns:1fr}}
+.colsub{color:var(--soft);font-size:.92rem;margin:2px 0 0;min-height:2.9em}
+.mark.dot{width:10px;height:10px;margin:7px 6px 0 6px;background:var(--ink)}
+.mark.dot.sup{background:var(--wait)}.mark.dot.ag{background:var(--can)}
+.rule{background:var(--wall);color:var(--surface);border-radius:14px;padding:18px 22px;margin-top:18px}
+.rule b{display:block;font:800 1.2rem ui-rounded,"Nunito",system-ui,sans-serif;margin-bottom:4px}
+.steps{background:var(--surface);border-radius:14px;margin:12px 0 0;padding:14px 22px 14px 44px}
+.steps li{margin:6px 0;padding-left:4px}
+.plan .sup .box{stroke:var(--wait);stroke-width:2.5}
 .seg{display:inline-flex;background:var(--surface);border-radius:999px;padding:3px;margin:10px 0 0}
 .seg button{border:0;background:none;color:var(--soft);font:inherit;font-size:.92rem;padding:5px 14px;border-radius:999px;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--ink);color:var(--surface);font-weight:650}
@@ -622,6 +693,12 @@ def render_plan(d):
     s.append(hit("you", '<rect class="box" x="18" y="150" width="96" height="120" rx="48"/>'
                         '<circle cx="66" cy="190" r="15" fill="none" stroke="var(--ink)" stroke-width="2"/>'
                         '<text class="big" x="66" y="240" text-anchor="middle">You</text>'))
+    # the supervisor stands next to you, outside the wall
+    explain("supervisor")
+    s.append('<path d="M66 272V296" stroke="var(--wait)" stroke-width="2.5" stroke-dasharray="3 4"/>')
+    s.append(hit("supervisor", '<rect class="box" x="18" y="298" width="96" height="62" rx="14"/>'
+                               '<text x="66" y="324" text-anchor="middle">Claude</text>'
+                               '<text class="small" x="66" y="344" text-anchor="middle">runs the box</text>', "sup"))
     # shelves with arrows into the room
     s.append(shelf("inbox", 62, "inbox", "it reads only",
                    '<path class="flow" d="M322 93H402" marker-end="url(#ah)"/>'))
@@ -666,6 +743,58 @@ def render_plan(d):
         x += w + 14
     s.append("</svg>")
     return "".join(s)
+
+
+def render_roles():
+    def col(title, sub, dot, rows):
+        items = "".join(row("", "dot " + dot, what, "", explain(key)) for key, what in rows)
+        return ('<div><h3 style="margin:0">%s</h3><p class="colsub">%s</p><ul class="list">%s</ul></div>'
+                % (e(title), e(sub), items))
+
+    you = col("You", "Outside the box. Every trust decision is yours.", "you", [
+        ("role-you-in", "Decide what goes in"),
+        ("role-you-talk", "Talk to the agent directly"),
+        ("role-you-widen", "Approve anything that widens its reach"),
+        ("role-you-merge", "Merge or reject its pull requests")])
+    sup = col("Claude, the supervisor", "A trusted assistant on your computer. Optional.", "sup", [
+        ("role-sup-run", "Runs and repairs the box"),
+        ("role-sup-propose", "Proposes wider access, never decides it"),
+        ("role-sup-review", "Reviews the agent's work like a stranger's"),
+        ("role-sup-drive", "Gives the agent tasks, checks the evidence"),
+        ("role-sup-never", "Never takes orders from the agent"),
+        ("role-sup-back", "Steps back when you work directly")])
+    agent = col("The agent", "Inside the box. Not trusted, and it does not need to be.", "ag", [
+        ("role-ag-work", "Does the work in the project folder"),
+        ("role-ag-hand", "Hands over commits and outbox files"),
+        ("role-ag-ask", "Says what it is missing"),
+        ("role-ag-holds", "Holds no key, login or control")])
+    return '<div class="roles">%s%s%s</div>' % (you, sup, agent)
+
+
+STEPS = """<ol class="steps">
+<li><b>You hand something in.</b> A file in the inbox, a project folder, or one granted repository.</li>
+<li><b>The agent works.</b> It reads, writes and runs code inside its room and commits as it goes.</li>
+<li><b>The guards write everything down.</b> Every message to the model and every attempt to reach the internet.</li>
+<li><b>Results wait at the exit.</b> Files in the outbox, commits in the project. Nothing has left yet.</li>
+<li><b>Someone trusted looks.</b> You, or Claude for you, read the changes before anything is used.</li>
+<li><b>You let it out.</b> One command opens a pull request from the commits. Merging it is your decision.</li>
+</ol>"""
+
+COMMANDS = (
+    ("bin/box start", "Start the box and talk to the agent"),
+    ("bin/box report", "Rebuild this page"),
+    ("bin/box test", "Try to break out; every attempt should fail"),
+    ("bin/box logs -f", "Watch model calls and internet requests live"),
+    ("bin/box repo add <name>", "Grant one repository"),
+    ("bin/box pr", "Turn the agent's commits into a pull request"),
+    ("bin/box diff", "See what changed in the project"),
+    ("bin/box down", "Stop the box"),
+)
+
+
+def render_commands():
+    return "<table>%s</table>" % "".join(
+        "<tr><td class=\"n\"><code>%s</code></td><td>%s</td></tr>" % (e(c), e(t)) for c, t in COMMANDS)
 
 
 def render_can(d):
@@ -897,6 +1026,7 @@ def build():
     last_active = max(all_calls) if all_calls else None
 
     plan = render_plan(d)
+    roles = render_roles()
     can = render_can(d)
     cannot = render_cannot(d)
     t = d["test"]
@@ -926,6 +1056,18 @@ have logged. Click anything for a plain explanation.</p>
 <div class="plan">%(plan)s</div>
 <p class="hint">Green lines are open paths. Dashed grey means closed or not there. Every shape is clickable.</p>
 </section>
+<section><h2>Who does what</h2>
+<p class="lead" style="margin:0">Three parties, three levels of trust. The agent is kept safe by the room it is in.
+You and Claude are kept safe by what you each agree not to do.</p>
+%(roles)s
+<div class="rule"><b>Nothing the agent writes is an instruction.</b>
+Its notes, commit messages, pull request text and transcripts are read as information, by you and by Claude.
+If the agent asks for something to be run, fetched or opened outside the box, a person decides.</div>
+</section>
+<section><h2>How a piece of work travels</h2>
+<p class="lead" style="margin:0">From your hands, through the box, and back out.</p>
+%(steps)s
+</section>
 <section class="cols">
 <div><h2>It can</h2><p class="lead" style="margin:0">Everything you have handed in or opened.</p>%(can)s</div>
 <div><h2>It cannot</h2><p class="lead" style="margin:0">%(tested)s.</p>%(cannot)s</div>
@@ -941,11 +1083,15 @@ have logged. Click anything for a plain explanation.</p>
 <section><h2>In the outbox</h2>
 <p class="lead" style="margin:0">Written by the agent. Reading is safe; running is a decision.</p>%(outbox)s</section>
 <section><h2>Budget</h2>%(budget)s</section>
+<section><h2>Everyday commands</h2>
+<p class="lead" style="margin:0">Typed in a terminal on your computer, in the agent-box folder. Never inside the agent.</p>
+%(commands)s</section>
 <footer>Built %(now)s with <code>bin/box report</code>. This page is a snapshot: run the command again to refresh it.
 Self-test attempts are left out of the activity figures.</footer>
 </main>%(pops)s<script>%(js)s</script></body></html>
 """ % {
         "css": CSS, "js": JS, "pops": "".join(POPS), "plan": plan, "can": can, "cannot": cannot,
+        "roles": roles, "steps": STEPS, "commands": render_commands(),
         "tested": e(tested[0].upper() + tested[1:]), "periods": periods, "waiting": render_waiting(d),
         "outbox": render_outbox(d), "budget": render_budget(d),
         "state": "Box is running" if up else "Box is stopped", "state_cls": "on" if up else "off",
