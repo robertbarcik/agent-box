@@ -16,48 +16,59 @@ read the full record afterwards.
 The principle of the whole repo in one sentence: **do not rely on the agent behaving well; build
 the room so that misbehaving achieves nothing.**
 
+## Why this repo exists
+
+Putting a coding agent in a sandbox is not a new idea, and you do not need this repo to do it.
+There are finished, maintained tools: [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/)
+gives every agent its own small virtual machine, [Claude Code](https://code.claude.com/docs/en/sandbox-environments)
+and OpenAI's Codex CLI ship a sandbox of their own, Apple's [container](https://github.com/apple/container)
+runs one lightweight VM per container on a Mac, and [yolobox](https://github.com/finbarr/yolobox)
+and [container-use](https://github.com/dagger/container-use) wrap agents in containers much like
+this repo does. If you want a sandbox to depend on at work, start there. A comparison is
+[further down](#how-this-compares-to-other-agent-sandboxes).
+
+This repo is for something those tools are not built for:
+
+- **It is for learning.** It is lecture material first. Every wall is a few lines you can read,
+  and every wall has a test: delete the line, run `bin/box test`, watch one check fail, put it
+  back. There are [ten exercises](#try-this-lecture-exercises) at the end, and most of them ask
+  you to attack the box.
+- **Nothing in it is hidden.** The architecture is one Compose file. The guard that holds your
+  API key is one Python file of about 200 lines. The internet filter is a 29-line proxy
+  configuration and a text file of allowed sites. The agent itself, opencode, is open source.
+  The one part you cannot open and read is the model.
+- **It shows its work.** Every model call and every attempt to reach the internet is written
+  down by something the agent cannot touch, and one command turns those logs into a page that
+  says what the agent can do, cannot do, and tried to do.
+- **It is shaped around one person's way of working.** It was built by its user together with a
+  coding agent, for his own tools and habits: a drop folder for review, pull requests as the only
+  way out, a second agent that supervises the first under written rules. That is the other
+  lesson in here. A tool this size you can build for yourself, and then it fits. Fork it and
+  bend it to yours.
+
+What it is not: a product, or the strongest wall available. A container shares a kernel with
+its host. For code you consider hostile, use one of the micro-VM tools above.
+
 ## The picture
 
-```mermaid
-flowchart LR
-    subgraph host["Your computer"]
-        you(["You"])
-        ws[("workspaces/&lt;name&gt;<br/>one project folder")]
-        subgraph inside["inside network: no route out"]
-            agent["<b>agent</b><br/>opencode<br/>no secrets, no root"]
-        end
-        gateway["<b>gateway</b><br/>adds the API key<br/>model calls only"]
-        egress["<b>egress</b><br/>allowlist proxy<br/>empty by default"]
-    end
-    model(["OpenRouter<br/>the model"])
-    net(["Internet"])
-
-    you -- "box code / box run (--web)" --> agent
-    agent <--> ws
-    agent -- "door 1" --> gateway --> model
-    agent -- "door 2" --> egress -. "only listed domains" .-> net
-    model -. "web search · --web<br/>runs here, not in the box" .-> net
-```
-
-The dotted line from the model is web search (`--web`): when you turn it on, OpenRouter searches
-the web on *its* side and hands the results back through door 1. The agent itself still has no
-route out — the box's walls are exactly the same with it on or off.
-
-You do not have to keep this picture in your head. `bin/box report` draws it from the live state
-of your box, with a plain-language pop-up behind every element:
+The agent sits in a walled room. Three folders are handed in on the left, two guarded doors lead
+out on the right, and everything else on your computer is simply not there.
 
 ![The status page: what is waiting for you, a clickable floor plan of the box, and lists of what the agent can and cannot do](docs/status.png)
+
+This is a screenshot of the box's own status page. `bin/box report` draws it from the live state
+of your box, and on the real page every shape opens a plain-language explanation.
 
 Three small containers:
 
 | Container | Job | What it can reach |
 |---|---|---|
 | **agent** | Runs opencode and every command the model decides to run. | Only the two doors below. |
-| **gateway** | Door 1. Forwards model calls to OpenRouter and attaches your API key on the way out. | OpenRouter. |
+| **gateway** | Door 1. Reads each model call, lets through only calls to the model you chose, and attaches your API key on the way out. | OpenRouter. |
 | **egress** | Door 2. A proxy that lets through only domains listed in `egress/allowlist.txt`. | Whatever you list. Nothing by default. |
 
 The agent reaches nothing else. The one way to bring in outside facts without opening door 2 is
-`--web`, which lets the *model* search the web on OpenRouter's side — see
+`--web`, which lets the *model* search the web on OpenRouter's side for one run. See
 [Letting the model search the web](#letting-the-model-search-the-web).
 
 ## Quick start
@@ -87,8 +98,8 @@ The first start builds three images and takes a few minutes.
 bin/box test
 ```
 
-This runs 22 checks from inside the box (reach the internet, find the key, become root, see your
-files) and expects every escape attempt to fail. See [What the test proves](#what-the-test-proves).
+This runs 26 checks from inside the box (reach the internet, find the key, switch models, become
+root, see your files) and expects every escape attempt to fail. See [What the test proves](#what-the-test-proves).
 
 **4. Work.**
 
@@ -119,11 +130,14 @@ bin/box down          # stop
 | `box start [workspace]` | Start the box and open opencode in it (`up` + `code`). |
 | `box up [workspace]` | Build if needed and start. Each workspace is a folder under `workspaces/`. |
 | `box down` | Stop. The agent's sessions are kept. |
-| `box reset` | Stop and wipe the agent's home (sessions, caches). Workspaces stay. |
+| `box reset` | Stop and wipe the agent's home for the current workspace (sessions, caches). Workspaces stay. |
 | `box status` | What is running, which workspace, which model. |
 | `box code [--web]` | Open opencode's terminal UI inside the box. |
 | `box run [--web] "task"` | One task without the UI. Full transcript saved to `runs/`. |
 | `--web` | Let the model search the web for this run (see "Web search", below). |
+| `box in <file>...` | Copy files or folders into the inbox. |
+| `box out [folder]` | Copy the outbox to a folder of yours for review. |
+| `box smoke` | One tiny task, to see that the agent still answers. For after a version bump. |
 | `box shell` | A plain shell inside the box, to look around as the agent would. |
 | `box report` | Build and open `status.html`: what the agent can and cannot do, and what it did. |
 | `box logs [-f]` | Every model call and every internet request, live with `-f`. |
@@ -156,6 +170,17 @@ the agent holds no password, key or login.
 These three folders are the agent's entire view of your computer. There is no setting that keeps
 it out of your other folders, because for the agent they do not exist.
 
+Two small commands move things across:
+
+```bash
+bin/box in ~/somewhere/spec.pdf     # a copy lands in inbox/
+bin/box out                         # the outbox is copied to a fresh folder for you to read
+```
+
+`box out` copies to `exports/`, or to the folder you name in `.env` as `BOX_HANDOFF_DIR` if you
+already have a place where things wait for your review. It copies file contents only: links are
+left behind and listed, and a file the agent marked as a program arrives as a plain file.
+
 ### Repositories, one at a time
 
 ```bash
@@ -179,8 +204,9 @@ How a commit travels from the box to GitHub without the agent ever holding a log
 The pull request is the review gate, so protect your main branch on GitHub (*Settings > Branches*)
 to make merging without review impossible.
 
-`box pr` refuses commits that change `.github/`, `.claude/`, `.vscode/`, `.devcontainer/`,
-`.husky/` or `.githooks/`. Files there run by themselves: a changed workflow file runs on
+`box pr` refuses commits that change `.github/`, `.claude/`, `.vscode/`, `.cursor/`, `.idea/`,
+`.devcontainer/`, `.husky/` or `.githooks/` at any depth, or the files `.mcp.json`, `.envrc`,
+`.gitmodules` and `.pre-commit-config.yaml`. Files there run by themselves: a changed workflow file runs on
 GitHub's servers, with your repository's secrets, the moment the branch is pushed, before anyone
 has reviewed anything. Read such a change first and repeat with `--allow-sensitive` if it is
 fine. Changes to `CLAUDE.md` and `AGENTS.md` are pointed out, because they are instructions that
@@ -254,11 +280,14 @@ web page or a file told it to, which is called prompt injection). The box does n
 |---|---|---|
 | Read your documents, SSH keys, browser profile | They are not there. Only the project folder, `inbox/` and `outbox/` are mounted. | `compose.yaml`, `volumes` |
 | Push to GitHub or open a pull request | No GitHub login in the box and no road to github.com. Publishing is done by you with `box pr`. | `bin/box`, `cmd_pr` |
-| Steal the API key | The agent's key is the text `held-by-the-gateway`. The real one lives in a different container. | `gateway/default.conf.template` |
+| Steal the API key | The agent's key is the text `held-by-the-gateway`. The real one lives in a different container. | `gateway/gateway.py` |
+| Switch to another, more expensive model | The gateway reads each call and passes only the model you set in `BOX_MODEL`. | `gateway/gateway.py`, `judge` |
+| Switch web search on by itself | Web search runs at the provider, outside the walls. The gateway refuses it unless you started the run with `--web`. | `gateway/gateway.py`, `judge` |
+| Leave instructions for its next task in another project | Each workspace has its own agent home. | `compose.yaml`, `volumes` |
 | Send your code to a server somewhere | The agent's network has no route out, and outside names do not even resolve. | `compose.yaml`, `internal: true` |
 | Use the proxy to get out anyway | The proxy refuses every domain not on the allowlist, and the list starts empty. | `egress/squid.conf` |
 | Reach your router, NAS or printer | Same rule: a home-network address is not on the allowlist. | `egress/squid.conf` |
-| Read your OpenRouter account or create keys | The gateway passes three endpoints (chat, responses, model list) and refuses the rest. | `gateway/default.conf.template` |
+| Read your OpenRouter account or create keys | The gateway passes three endpoints (chat, responses, model list) and refuses the rest. | `gateway/gateway.py` |
 | Become root, install system software | Ordinary user, no sudo, all Linux capabilities dropped, system files read-only. | `compose.yaml`, `cap_drop`, `read_only` |
 | Start other containers or take over Docker | The Docker socket is not mounted. | `compose.yaml` |
 | Eat all your memory or fork endlessly | Memory, CPU and process limits. | `compose.yaml`, `mem_limit`, `pids_limit` |
@@ -273,6 +302,18 @@ before passing the request on. The agent can use the model but can never see or 
 
 The same idea works for any credential an agent needs: give it a narrow service that performs the
 action, not the secret that authorizes everything.
+
+Holding the key is not enough, though. A key can be *used* without being seen: the agent can
+call the gateway directly with `curl` and ask for anything the key allows. So the gateway also
+reads each message and refuses what the agent may not decide for itself:
+
+- **Another model.** Only the model in `BOX_MODEL` passes (add more with `BOX_EXTRA_MODELS`).
+- **Tools that run on the provider's side.** A normal tool call comes back into the box and runs
+  under its walls. A provider-side tool, web search above all, runs outside them. Those are
+  refused when they come from the agent.
+
+`gateway/gateway.py` is about 200 lines of plain Python and is meant to be read. The function
+`judge` is the whole policy.
 
 ### Door 2: the allowlist decides what "internet" means
 
@@ -306,29 +347,35 @@ $ bin/box run "In one sentence, what is the current latest stable version of GNU
 NO WEB
 
 $ bin/box run --web "In one sentence, what is the current latest stable version of GNU bash?"
-web search ON: openrouter/z-ai/glm-5.3:online  (every model call may search; logged in logs/gateway.log)
-The latest stable version of GNU bash is 5.3.20 (formulae.brew.sh, freshports.org).
+web search ON for this run: the guard at door 1 adds it to every model call (logged with web=on in logs/gateway.log)
+The current latest stable version of GNU bash is 5.3.20 (the 5.3 release from July 2025 with
+official patches applied), per Homebrew and FreeBSD package data (https://formulae.brew.sh/formula/bash).
 ```
 
-(The plain run was told to answer `NO WEB` if it could not reach the web — and it could not.)
+(The plain run was told to answer `NO WEB` if it could not reach the web, and it could not.)
 
-`--web` runs the model as `<model>:online`, OpenRouter's built-in web search. The search happens
-on OpenRouter's servers, so the box's own walls do not move: the agent's `curl`, `webfetch` and
-package installs still fail, the egress allowlist stays empty, and the `box test` checks are
-unchanged (they test the agent's network, which `--web` never touches). Every call still goes
-through the gateway and into `logs/gateway.log`. It is off by default — a plain `box run` has no
-web at all.
+`--web` flips a switch at the gateway, on your side of the wall. While it is on, the gateway adds
+OpenRouter's web search tool to the agent's model calls. The search happens on OpenRouter's
+servers, so the box's own walls do not move: the agent's `curl`, `webfetch` and package installs
+still fail, and the egress allowlist stays empty. When the run ends, the switch goes back to off.
 
-You can watch the difference in the logs. During a `--web` run the agent still tries its own
-fetches and is still refused at the egress proxy; the web facts arrive on the model's side,
-through door 1:
+The agent cannot flip that switch. If it asks the gateway for web search itself, the request is
+refused and logged, and `box test` checks exactly that. This matters because web search is a
+way out as well as a way in: whatever the model searches for leaves the box as a search query.
+
+You can watch all of it in the logs. The agent's own attempts to fetch a page are refused at
+door 2, with or without `--web`. The web facts arrive on the model's side, through door 1:
 
 ```text
 $ bin/box egress        # the agent's own attempt to reach the web: refused
-2026-11-16T12:20:02 TCP_DENIED/403 CONNECT api.open-meteo.com:443
+2026-11-16T14:28:11 TCP_DENIED/403 CONNECT www.gnu.org:443 bytes=3815
 
-$ bin/box logs          # the model's call through door 1, now carrying search results
-2026-11-16T12:20:27 POST /api/v1/chat/completions status=200 secs=6.8 bytes_in=107161 bytes_out=953
+$ bin/box logs          # door 1: the same model, once without and once with web search
+2026-11-16T14:28:13+00:00 POST /api/v1/chat/completions status=200 upstream=200 secs=1.969 bytes_in=34114 bytes_out=7399 model=z-ai/glm-5.3 web=off
+2026-11-16T14:28:16+00:00 POST /api/v1/chat/completions status=200 upstream=200 secs=4.229 bytes_in=31280 bytes_out=11953 model=z-ai/glm-5.3 web=on
+
+                        # and an agent asking for web search on its own: refused at door 1
+2026-11-16T14:27:57+00:00 POST /api/v1/chat/completions status=403 upstream=- secs=0.000 bytes_in=111 bytes_out=102 model=z-ai/glm-5.3 web=off refused=provider-side-tool
 ```
 
 What it does cost you: the model's queries and the pages it reads go to OpenRouter (and its search
@@ -338,21 +385,27 @@ its answers accordingly. Use it for fact-checking during research, not as a stan
 
 ### An optional third door: one device
 
-Sometimes a task needs a real device the box cannot otherwise see — a USB disk, an e-reader in
+Sometimes a task needs a real device the box cannot otherwise see: a USB disk, an e-reader in
 drive mode, a camera card. `compose.device.yaml` mounts exactly one, opt-in and per run:
 
 ```bash
-BOX_DEVICE=1 DEVICE_PATH=/Volumes/MyDisk bin/box up myproject
+BOX_DEVICE=1 DEVICE_PATH=/Volumes/MyDisk bin/box up myproject                  # read and write
+BOX_DEVICE=1 BOX_DEVICE_RO=1 DEVICE_PATH=/Volumes/MyDisk bin/box up myproject  # read only
 ```
 
-The device appears inside the box as `/device`, read-write. Nothing else changes: no second
-device, and above all no network — the egress allowlist, the gateway and every `box test` check
-are exactly as they were, because mounting storage never touches the agent's network. A plain
+The device appears inside the box as `/device`. Nothing else changes: no second device, and
+above all no network. The egress allowlist, the gateway and the other `box test` checks are
+exactly as they were, because mounting storage never touches the agent's network. A plain
 `bin/box up` leaves the door shut, and the `no device is mounted unless opted in` check proves it.
 
-The mount is the host's real storage, not a copy, so the agent's writes land on the device: treat
-it the way you treat the workspace. And a device usually carries more than the files this task
-needs — look at what is on it before you hand it over.
+The door is for devices. `box up` refuses a path that is really your computer: your home folder,
+system folders, or a name like `/Volumes/Macintosh HD`, which looks like a disk and is your
+whole machine.
+
+The mount is the host's real storage, not a copy, so with a read-write mount the agent's writes
+land on the device: treat it the way you treat the workspace, and start read-only when the task
+is only to look. A device usually carries more than the files this task needs, so look at what
+is on it before you hand it over.
 
 ### Opening a door for one task, then closing it
 
@@ -360,14 +413,15 @@ The two doors and the device mount are the whole width of what the box can reach
 one shape: **shut by default, opened by a person for a named task, closed again after.** The box
 starts with no internet, no device, and only the model. For a task that needs packages you
 uncomment two lines in the allowlist; for one that needs a current fact you add `--web`; for one
-that needs a USB disk you set `BOX_DEVICE=1` — each the smallest opening that lets the task run,
-and each easy to undo.
+that needs a USB disk you set `BOX_DEVICE=1`. Each is the smallest opening that lets the task
+run, and each is easy to undo.
 
 This is the rhythm the whole arrangement is built around (see [A trusted assistant as
 supervisor](#a-trusted-assistant-as-supervisor)): opening a door always waits for a person,
 closing one never does, so the safe move is cheap and the risky move is deliberate. When the task
-is done, put the box back to its closed default — comment the domains out again, drop `--web`,
-bring the box up without `BOX_DEVICE` — and the next task starts from the same tight floor.
+is done, put the box back to its closed default: comment the domains out again and bring the
+box up without `BOX_DEVICE` (`--web` switches itself off when its run ends). The next task then
+starts from the same tight floor.
 
 ## Getting work out safely
 
@@ -389,13 +443,13 @@ an email attachment from a stranger: fine to read, not fine to run unread.
 
 ```text
 $ bin/box logs -f
-2026-11-16T08:39:09+00:00 POST /api/v1/chat/completions status=200 upstream=200 secs=13.786 bytes_in=31050 bytes_out=336707
+2026-11-16T14:28:11+00:00 POST /api/v1/chat/completions status=200 upstream=200 secs=1.298 bytes_in=32739 bytes_out=7156 model=z-ai/glm-5.3 web=off
 2026-11-16T08:28:52 TCP_DENIED/403 CONNECT registry.npmjs.org:443 bytes=3766
 2026-11-16T08:29:51 TCP_TUNNEL/200 CONNECT pypi.org:443 bytes=48714129
 ```
 
 The first line is a model call through the gateway: one step of the agent's work, with how long
-the model took and how much was sent and received. The second is the egress proxy refusing a
+the model took, how much was sent and received, which model was asked and whether web search was on. The second is the egress proxy refusing a
 request: opencode itself looking for a plugin on the npm registry, which it works fine without.
 The third is a request that was let through after PyPI was put on the allowlist.
 
@@ -443,6 +497,10 @@ Model gateway
   PASS  model catalogue is reachable
   PASS  account endpoints are refused
   PASS  key endpoints are refused
+  PASS  a disguised path is refused
+  PASS  another model than yours is refused
+  PASS  switching web search on from inside is refused
+  PASS  the web-search model variant is refused
 Secrets
   PASS  the real API key is not in the environment
   PASS  no host home directory is mounted
@@ -459,7 +517,7 @@ Folders
   PASS  inbox can be read but not changed
   PASS  no device is mounted unless opted in
 
-22 passed, 0 failed
+26 passed, 0 failed
 ```
 
 Run it after every change to `compose.yaml`, the gateway or the proxy. A sandbox you have not
@@ -509,8 +567,12 @@ No sandbox is complete, and knowing the gaps is part of using one well.
 9. **Mount a device, and only that device.** Plug in a USB stick, then `BOX_DEVICE=1
    DEVICE_PATH=/Volumes/<name> bin/box up`. From inside (`bin/box shell`) confirm you can read
    and write `/device` but still cannot reach the internet or see any other disk, and that
-   `bin/box test` reports the device door as the one opening. Bring the box up again without
-   `BOX_DEVICE` and watch `/device` disappear.
+   `bin/box test` names the device door as open. Bring the box up again without `BOX_DEVICE`
+   and watch `/device` disappear. Then try `DEVICE_PATH=$HOME` and read the refusal.
+10. **Ask the guard for more than you were given.** In `bin/box shell`, call the gateway yourself
+    with `curl` and ask for a different model, then for web search (the two requests are in
+    `agent/selftest.sh`). Find your attempts in `bin/box logs`. Then open `gateway/gateway.py`
+    and find the lines in `judge` that refused you.
 
 ## Repository layout
 
@@ -520,8 +582,8 @@ compose.device.yaml       optional override: mount one device as /device (opt-in
 agent/Dockerfile          the agent image: tools, pinned opencode, non-root user
 agent/opencode.json       opencode settings: model, gateway address, permissions
 agent/AGENTS.md           what the agent is told about its surroundings
-agent/selftest.sh         the 22 containment checks
-gateway/                  nginx config that adds the API key (door 1)
+agent/selftest.sh         the 26 containment checks
+gateway/gateway.py        the guard at door 1: adds the API key, decides which calls pass
 egress/                   squid config and allowlist.txt (door 2)
 bin/box                   the one command you use
 lib/report.py             builds status.html
@@ -540,15 +602,62 @@ Inside the box opencode is allowed to do everything without asking, except web f
 "may I run this command?" is the agent's own, softer safety layer and depends on a human reading
 each prompt carefully. Here the walls do that job, so the agent can work without interruptions.
 
-## Notes on versions
+## Versions: what moves under the box, and what to do about it
 
-- Built and tested on macOS (Apple Silicon) with Docker Desktop 29.8 and Compose 5.5.
-- opencode is pinned to **1.19.5** (`OPENCODE_VERSION` in `.env`). opencode also has a newer 2.x
-  line, published as a different npm package with a different configuration format. Moving the
-  box to it means changing `agent/Dockerfile` and `agent/opencode.json`.
-- The harness is replaceable. The walls (`compose.yaml`, `gateway/`, `egress/`) know nothing
-  about opencode. Any agent that can be pointed at an OpenAI-compatible base URL fits in the
-  `agent` container.
+Built and tested on macOS (Apple Silicon) with Docker Desktop 29.8 and Compose 5.5.
+
+The box depends on three things that change on their own schedule. It is built so that each
+touches one file.
+
+| What changes | How often | Where it touches the box | What protects you |
+|---|---|---|---|
+| **opencode** (the agent program) | New releases about weekly. | `agent/Dockerfile` (the install line) and `agent/opencode.json` (its settings). Nothing else. | It is pinned to **1.19.5** in `.env` and never updates itself. |
+| **OpenRouter** (the line to the model) | The chat API is stable. Extras around it come and go: the `:online` web search this box first used is already deprecated. | `gateway/gateway.py`. The agent never talks to OpenRouter directly, so an API change is absorbed there. | Web search is one line (`WEB_TOOL`) in the gateway. |
+| **The model** | Models are renamed and retired. | `BOX_MODEL` in `.env`, and the model's entry in `agent/opencode.json`. | `box smoke` fails at once if the model is gone. |
+
+The walls (`compose.yaml`, `gateway/`, `egress/`) know nothing about opencode. Any agent that can
+be pointed at an OpenAI-compatible base URL fits in the `agent` container, so the harness is
+replaceable without touching the security.
+
+To move to a new opencode release:
+
+```bash
+# 1. change OPENCODE_VERSION in .env, then
+bin/box up          # rebuilds the agent image
+bin/box test        # the walls: must be 26 of 26, as before
+bin/box smoke       # the agent: does it still start and answer?
+```
+
+If `smoke` fails, put the old version back in `.env` and run `bin/box up`: you are where you
+were. A pin costs nothing while you are not looking, which is the point of having one.
+
+opencode 2.x is a bigger step than a version number: it is published as a different package,
+and its settings file uses new names (`permission` becomes `permissions`, `provider` becomes
+`providers`, and access to folders outside the project is allowed by default instead of asked).
+Moving the box to it means editing `agent/Dockerfile` and `agent/opencode.json` together and
+reading its [migration guide](https://opencode.ai/v2/docs/migrate-v1) first. The walls do not
+care which side of that step you are on.
+
+## How this compares to other agent sandboxes
+
+The finished tools named at the top fall into four groups, by what the wall is made of. This
+repo is in the second.
+
+| Approach | Examples | The wall |
+|---|---|---|
+| A sandbox built into the agent | [Claude Code](https://code.claude.com/docs/en/sandbox-environments), OpenAI Codex CLI | Operating-system rules around the commands the agent runs (Seatbelt on macOS, bubblewrap on Linux). |
+| A container around the agent | this repo, [yolobox](https://github.com/finbarr/yolobox), [container-use](https://github.com/dagger/container-use) | A Docker container. Shares a kernel with its host. |
+| A small virtual machine per agent | [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/), Apple's [container](https://github.com/apple/container) | A separate kernel for each sandbox. The strongest wall you can run locally. |
+| A sandbox in someone's cloud | E2B, Daytona, Modal | A virtual machine that is not on your computer at all. |
+
+The ideas in this box are the ones the bigger tools share: a proxy that decides what the agent
+can reach, a key that is added outside the sandbox, the agent's work copied out and reviewed
+before it touches the real project. Two things here are less common, and are the reason the repo
+exists as teaching material: every wall has a test you can run and break, and a second, trusted
+agent supervises the first under written rules.
+
+If you need a stronger wall than a container for code you consider hostile, run the box inside
+a virtual machine, or use one of the micro-VM tools above.
 
 ## License
 

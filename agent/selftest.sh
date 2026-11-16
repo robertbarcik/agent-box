@@ -28,6 +28,13 @@ check "gateway is up"                              ok is 200 --noproxy '*' http:
 check "model catalogue is reachable"               ok is 200 --noproxy '*' http://gateway:8080/api/v1/models
 check "account endpoints are refused"              ok is 403 --noproxy '*' http://gateway:8080/api/v1/credits
 check "key endpoints are refused"                  ok is 403 --noproxy '*' http://gateway:8080/api/v1/keys
+check "a disguised path is refused"                ok is 403 --noproxy '*' --path-as-is 'http://gateway:8080/api/v1/keys%2f..%2fmodels'
+# The agent asks the guard for things only you may decide. Refused before any money is spent.
+model="${BOX_MODEL#openrouter/}"
+ask() { is 403 --noproxy '*' -H 'Content-Type: application/json' -d "$1" http://gateway:8080/api/v1/chat/completions; }
+check "another model than yours is refused"        ok ask '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
+check "switching web search on from inside is refused" ok ask '{"model":"'"$model"'","tools":[{"type":"openrouter:web_search"}],"messages":[{"role":"user","content":"hi"}]}'
+check "the web-search model variant is refused"    ok ask '{"model":"'"$model"':online","messages":[{"role":"user","content":"hi"}]}'
 
 echo "Secrets"
 check "the real API key is not in the environment" ok test "$OPENROUTER_API_KEY" = "held-by-the-gateway"
@@ -45,7 +52,11 @@ echo "Folders"
 check "workspace is writable"                      ok sh -c 'touch /workspace/.box-selftest && rm /workspace/.box-selftest'
 check "outbox is writable"                         ok sh -c 'touch /outbox/.box-selftest && rm /outbox/.box-selftest'
 check "inbox can be read but not changed"          blocked touch /inbox/.box-selftest
-check "no device is mounted unless opted in"       blocked test -e /device
+if [ "${BOX_DEVICE_OPEN:-0}" = 1 ]; then
+  check "the device you opened is mounted (door open)" ok test -d /device
+else
+  check "no device is mounted unless opted in"     blocked test -e /device
+fi
 
 echo
 echo "$pass passed, $fail failed"

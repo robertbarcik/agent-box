@@ -13,7 +13,7 @@ services:
     build:
       context: ./agent
       args:
-        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-1.19.5}
     image: agent-box/agent
     init: true
     command: ["sleep", "infinity"]
@@ -34,7 +34,7 @@ services:
       - ./workspaces/${BOX_WORKSPACE:-default}:/workspace   # the project it works on
       - ./inbox:/inbox:ro                                    # you drop things in; it can only read
       - ./outbox:/outbox                                     # it leaves things for you
-      # The agent's own home (sessions, caches). Lives in Docker, not on your disk.
+      # The agent's own home (sessions, caches). Lives in Docker, not on your disk. One per workspace.
       - home:/home/agent
     tmpfs:
       - /tmp:exec,size=1g
@@ -53,9 +53,20 @@ services:
     image: agent-box/gateway
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # The guard lets through calls to this model only (plus BOX_EXTRA_MODELS, if you set it).
+      BOX_MODEL: ${BOX_MODEL:-openrouter/z-ai/glm-5.3}
+      BOX_EXTRA_MODELS: ${BOX_EXTRA_MODELS:-}
     volumes:
       # The guards write their logbooks here. The agent cannot see this folder.
       - ./logs:/box-logs
+      # The web-search switch, written by bin/box on the host (box run --web).
+      - ./.box/policy:/box-policy:ro
+    # The guard faces the agent, so it gets the same treatment: nothing to write to, no powers.
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]   # to append to logs/ on Linux, where that folder belongs to you
+    security_opt:
+      - no-new-privileges:true
     networks: [inside, outside]
     restart: unless-stopped
 
@@ -77,4 +88,7 @@ networks:
   outside: {}
 
 volumes:
-  home: {}
+  # One home per workspace: what the agent leaves in its home while working on one project
+  # (settings, notes to its future self) is not there when it works on the next.
+  home:
+    name: agent-box_home_${BOX_WORKSPACE:-default}

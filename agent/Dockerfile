@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # The coding agent itself, pinned so every student gets the same one.
-ARG OPENCODE_VERSION=latest
+ARG OPENCODE_VERSION=1.19.5
 RUN npm install -g opencode-ai@${OPENCODE_VERSION} && npm cache clean --force
 
 # An ordinary user without sudo. The agent never runs as root.

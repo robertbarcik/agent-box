@@ -15,5 +15,8 @@
 
 services:
   agent:
+    environment:
+      BOX_DEVICE_OPEN: "1"   # tells the self-test that this door was opened on purpose
     volumes:
-      - ${DEVICE_PATH:?set DEVICE_PATH to the mounted device, e.g. /Volumes/MyDisk}:/device
+      # DEVICE_MODE is rw, or ro when the box was started with BOX_DEVICE_RO=1.
+      - ${DEVICE_PATH:?set DEVICE_PATH to the mounted device, e.g. /Volumes/MyDisk}:/device:${DEVICE_MODE:-rw}

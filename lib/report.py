@@ -36,7 +36,14 @@ def sh(args, timeout=25):
 
 
 def compose(*args):
-    return sh(["docker", "compose", "--project-directory", str(ROOT), "-f", str(ROOT / "compose.yaml"), *args])
+    """Same compose files and settings as bin/box, so the page shows the box as it was started."""
+    files = ["-f", str(ROOT / "compose.yaml")]
+    os.environ.setdefault("BOX_WORKSPACE", read(STATE / "workspace").strip() or "default")
+    if read(STATE / "device").strip() == "1":
+        files += ["-f", str(ROOT / "compose.device.yaml")]
+        os.environ.setdefault("DEVICE_PATH", read(STATE / "device-path").strip())
+        os.environ.setdefault("DEVICE_MODE", read(STATE / "device-mode").strip() or "rw")
+    return sh(["docker", "compose", "--project-directory", str(ROOT), *files, *args])
 
 
 def read(path, default=""):
@@ -185,8 +192,10 @@ def collect_logs():
     for line in read(ROOT / "logs" / "gateway.log").splitlines():
         m = re.match(r"(\S+) (\S+) (\S+) status=(\d+)", line)
         t = parse_ts(m.group(1)) if m else None
-        if t and not in_test(t) and "/chat/completions" in m.group(3) or t and not in_test(t) and "/responses" in m.group(3):
-            calls.append({"t": t, "ok": m.group(4) == "200", "status": m.group(4)})
+        if t and not in_test(t) and ("/chat/completions" in m.group(3) or "/responses" in m.group(3)):
+            why = re.search(r" refused=(\S+)", line)
+            calls.append({"t": t, "ok": m.group(4) == "200", "status": m.group(4),
+                          "web": " web=on" in line, "refused": why.group(1) if why else ""})
     for line in read(ROOT / "logs" / "egress.log").splitlines():
         m = re.match(r"(\S+) (\S+)/(\d+) (\S+) (\S+)", line)
         t = parse_ts(m.group(1)) if m else None
@@ -308,12 +317,14 @@ EXPLAIN = {
         "the key were inside the box, the agent could read it and leak it.",
         "So the key stays with a guard. The agent hands its message to the guard, the guard "
         "attaches the key and passes it on. The agent uses the key without ever seeing it.",
-        "The guard also refuses anything that is not a conversation with the model, such as "
-        "questions about your account.",
-        "If you start the agent with web search on (box run --web), the model may look things up "
-        "on the web while it answers. That search runs at OpenRouter, not in the box, and comes "
-        "back through this same door, so the walls do not change: the agent still has no way onto "
-        "the internet itself. It is off unless you ask for it."], "bin/box logs"),
+        "The guard also reads each message. It refuses anything that is not a conversation with "
+        "the model you chose: questions about your account, a different model, or extras that "
+        "run on the provider's side.",
+        "Web search is such an extra. If you start a task with it (box run --web), the guard adds "
+        "it to the agent's messages for that run, and the model may look things up while it "
+        "answers. The search runs at OpenRouter, not in the box, and comes back through this same "
+        "door. The agent cannot switch it on: the switch is on your side of the wall."],
+        "bin/box logs"),
     "model": ("The model", [
         "The model runs at a company on the internet, reached through OpenRouter. It never runs on "
         "your computer.",
@@ -434,6 +445,11 @@ EXPLAIN = {
         "also send data to them.",
         "Close them when the task is done: put a # in front of the line in egress/allowlist.txt "
         "and reload."], "bin/box reload"),
+    "can-device": ("Use the device you mounted", [
+        "You started the box with the device door open: one plugged-in device's storage is visible "
+        "inside as /device. Nothing else came with it, and the network is exactly as closed as before.",
+        "It is the real device, not a copy. Start the box again without the device to close the door."],
+        "bin/box up"),
     # --- structural "cannot" rows (not part of the self-test)
     "cannot-push": ("Publish anything by itself", [
         "No GitHub login, no way to push, no way to open a pull request. Publishing always goes "
@@ -495,6 +511,23 @@ CHECKS = {
         "A check that the agent can hand you results."),
     "inbox can be read but not changed": ("Change or delete what you put in the inbox",
         "The inbox is handed in read-only. Your originals stay as they are."),
+    "no device is mounted unless opted in": ("See a plugged-in device you did not hand over",
+        "A USB disk or e-reader is mounted only when you start the box with the device door open."),
+    "the device you opened is mounted (door open)": ("(The device door is open, as you asked)",
+        "You started the box with one device mounted. This line confirms it is there; the door "
+        "closes when you start the box again without it."),
+    "a disguised path is refused": ("Dress up a forbidden request as an allowed one",
+        "The test writes a request for your keys so that it looks like a request for the model list. "
+        "The guard at door 1 accepts one plain spelling per path and refuses the rest."),
+    "another model than yours is refused": ("Switch to a different model",
+        "You chose the model. The test asks the guard for another one, which could be far more "
+        "expensive or run by a company you did not pick. Refused before any money is spent."),
+    "switching web search on from inside is refused": ("Switch web search on by itself",
+        "Web search runs at the model provider, outside the walls, so it is a way to send words out. "
+        "Only you can switch it on, per run. The test asks for it from inside and is refused."),
+    "the web-search model variant is refused": ("Get web search through a differently named model",
+        "The same request in an older spelling: the model's name with a web-search ending. Refused "
+        "for the same reason."),
 }
 
 
@@ -827,6 +860,13 @@ def render_can(d):
     if d["allow"]:
         det = ", ".join("<code>%s</code>" % e(a) for a in d["allow"])
         rows.append(row("✓", "yes", "Reach the websites you opened", det, explain("can-domains")))
+    for m in d["cfg"]["mounts"]:
+        if m["box"] == "/device":
+            rows.append(row("✓", "yes", "Read the device you mounted" if m["ro"] else "Read and change the device you mounted",
+                            "<code>%s</code>" % e(m["host"]), explain("can-device")))
+    if d["web"]:
+        rows.append(row("✓", "yes", "Have its model search the web, right now",
+                        "switched on with <code>--web</code> for the task that is running", "p-gateway"))
     return '<ul class="list">%s</ul>' % "".join(rows)
 
 
@@ -876,7 +916,15 @@ def render_period(d, days, key, label, show):
              '<div class="stat"><span class="num">%d</span><span>internet requests refused</span></div>'
              '<div class="stat"><span class="num">%d</span><span>internet requests let through</span></div></div>'
              % (len(calls), active_days, "" if active_days == 1 else "s", len(runs), len(denied), len(allowed)))
-    failed = sum(not c["ok"] for c in calls)
+    refused = sum(bool(c["refused"]) for c in calls)
+    failed = sum(not c["ok"] for c in calls) - refused
+    searched = sum(c["web"] and c["ok"] for c in calls)
+    if refused:
+        h.append('<p class="hint"><span class="tag no">%d refused at door 1</span> The agent asked the guard for something '
+                 'only you may decide: another model, or web search switched on from inside.</p>' % refused)
+    if searched:
+        h.append('<p class="hint">%d model call%s ran with web search on (you switched it on with <code>--web</code>).</p>'
+                 % (searched, "" if searched == 1 else "s"))
     if failed:
         h.append('<p class="hint">%d model call%s failed (for example: no key, limit reached, model unavailable).</p>'
                  % (failed, "" if failed == 1 else "s"))
@@ -950,6 +998,8 @@ def render_waiting(d):
         else:
             items.append("%d file%s in the outbox, none new since you last looked."
                          % (d["outbox"]["count"], "" if d["outbox"]["count"] == 1 else "s"))
+    if any(m["box"] == "/device" for m in d["cfg"]["mounts"]):
+        items.append("A device is mounted into the box. Start the box again without it when the task is done.")
     if d["allow"]:
         items.append("%d website%s on the guest list. Close what is no longer needed: %s"
                      % (len(d["allow"]), " is" if len(d["allow"]) == 1 else "s are",
@@ -1012,7 +1062,8 @@ def build():
     test = collect_test()
     walls_changed = False
     if test and test["when"]:
-        for f in ("compose.yaml", "gateway/default.conf.template", "egress/squid.conf", "agent/Dockerfile"):
+        for f in ("compose.yaml", "compose.device.yaml", "gateway/gateway.py", "gateway/Dockerfile",
+                  "egress/squid.conf", "agent/Dockerfile", "agent/opencode.json"):
             try:
                 if dt.datetime.fromtimestamp((ROOT / f).stat().st_mtime, dt.timezone.utc) > test["when"]:
                     walls_changed = True
@@ -1023,6 +1074,7 @@ def build():
         "runs": collect_runs(), "allow": collect_allowlist(), "test": test, "walls_changed": walls_changed,
         "budget": collect_budget(), "inbox": collect_folder("inbox"), "outbox": collect_folder("outbox"),
         "workspace": read(STATE / "workspace").strip() or "default",
+        "web": read(STATE / "policy" / "web").strip() == "on",
         "model": cfg.get("model") or env_value("BOX_MODEL") or "not set", "last": last,
     }
     up = running.get("agent") == "running"

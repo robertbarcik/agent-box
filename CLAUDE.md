@@ -44,6 +44,14 @@ workspace or the outbox on the host.
   pushes to GitHub: run it only when Robert asks, and review the PR like a stranger's.
 - Never-grant list is `BOX_NEVER_REPOS` in `.env`. No Drive door, no AWS door (decided
   2026-11-16; the agent builds, the host deploys).
+- Handoff: `bin/box in <file>` copies into the inbox; `bin/box out` copies the outbox to
+  `BOX_HANDOFF_DIR` from `.env`, contents only. On Robert's Macs the review place is the hub's
+  drop folder: `bin/box out /Users/robertbarcik/git-repos/TEMP/agent-box` (Claude never opens
+  `.env`, it holds the key; Robert adds `BOX_HANDOFF_DIR` there himself if he wants the default).
+- Web search (`--web`) is switched at the gateway via `.box/policy/web`, per run, by the harness.
+  Using it is a widening: Robert's yes per task, like a domain. The gateway (`gateway/gateway.py`,
+  function `judge`) refuses other models and provider-side tools coming from the agent.
+- Device door: `BOX_DEVICE=1 DEVICE_PATH=... [BOX_DEVICE_RO=1] bin/box up`; a widening.
 - `bin/box report` builds `status.html` from live state. Everything agent-influenced that it
   prints must go through `html.escape`.
 
@@ -55,6 +63,14 @@ workspace or the outbox on the host.
   the agent service, the image or a log.
 - `egress/allowlist.txt` is committed with every domain commented out. Do not commit an opened door.
 - README claims are verified against the running box (the test output and log samples are real).
-  Re-verify when bumping `OPENCODE_VERSION` (1.x = npm `opencode-ai`; 2.x = `@opencode/cli`,
-  different config keys).
+  Bumping `OPENCODE_VERSION`: `bin/box up && bin/box test && bin/box smoke`, then one `box run`
+  and one `box run --web`; roll back the pin if smoke fails (1.x = npm `opencode-ai`; 2.x is a
+  different package with different config keys: README "Versions").
+- OpenRouter specifics live only in `gateway/gateway.py` (`WEB_TOOL`, allowed paths). `:online`
+  is deprecated upstream (2026-11); the gateway uses the `openrouter:web_search` server tool.
 - `bin/box` must stay compatible with macOS bash 3.2.
+- Raw `docker compose exec` probes from Claude's zsh: define a shell function in the same command
+  (`ax() { docker compose ... exec -T agent "$@"; }`), never a string variable (PAST_MISTAKES
+  2026-11-16, twice).
+- `docs/status.png` is a headless-Chrome screenshot of `status.html` (light mode, window 1180x1700);
+  retake it when the page's layout changes.

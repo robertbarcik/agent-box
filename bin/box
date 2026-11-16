@@ -14,7 +14,8 @@ box: a coding agent in a sandbox
   Start and stop
     box start [workspace]  start the box and open the agent's terminal UI (up + code)
     box up [workspace]     build if needed and start the box (default workspace: "default")
-                           (BOX_DEVICE=1 DEVICE_PATH=/Volumes/X box up ... mounts one device as /device)
+                           (BOX_DEVICE=1 DEVICE_PATH=/Volumes/X box up ... mounts one device as /device;
+                            add BOX_DEVICE_RO=1 to mount it read-only)
     box down               stop the box (the agent's sessions are kept)
     box reset              stop the box and wipe the agent's home (sessions, caches)
     box status             what is running, which workspace, which model
@@ -23,13 +24,15 @@ box: a coding agent in a sandbox
     box code [--web]       open the agent's terminal UI (you talk to it directly)
     box run [--web] "task" give it one task without the UI; transcript saved in runs/
     box shell              a plain shell inside the box
-    --web                  let the model search the web (OpenRouter server-side; logged)
+    --web                  let the model search the web for this run (switched on at the guard,
+                           runs at OpenRouter, logged; the agent cannot switch it on itself)
 
   See what it can do and what it did
     box report             build status.html: what the agent can and cannot do, what it did
     box logs [-f]          every model call and every internet request
     box egress [-f]        internet requests only (allowed and denied)
     box test               containment self-test: tries to break out, expects to fail
+    box smoke              one tiny task: does the agent still answer? (after a version bump)
 
   Open or close doors
     box reload             apply changes made to egress/allowlist.txt
@@ -48,6 +51,9 @@ box: a coding agent in a sandbox
   Folders you share with the agent
     inbox/                 you drop things here; the agent can read, not change
     outbox/                the agent leaves things here for you
+    box in <file>...       copy files or folders into the inbox
+    box out [folder]       copy the outbox to a folder of yours (default: BOX_HANDOFF_DIR in .env,
+                           else exports/); links stay behind, nothing arrives marked as a program
 EOF
 }
 
@@ -59,30 +65,44 @@ die() { echo "box: $*" >&2; exit 1; }
 # later compose calls (status, run) resolve it without needing DEVICE_PATH in their environment.
 device_on() { [ "${BOX_DEVICE:-$(cat "$STATE/device" 2>/dev/null || echo 0)}" = 1 ]; }
 
+current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
+
 compose() {
   local df=()
   if device_on; then
     export DEVICE_PATH="${DEVICE_PATH:-$(cat "$STATE/device-path" 2>/dev/null)}"
+    export DEVICE_MODE="${DEVICE_MODE:-$(cat "$STATE/device-mode" 2>/dev/null || echo rw)}"
     df=( -f "$ROOT/compose.device.yaml" )
   fi
-  docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" ${df[@]+"${df[@]}"} "$@"
+  # Every compose call names the same workspace, so they all mean the same folder and home.
+  BOX_WORKSPACE="${BOX_WORKSPACE:-$(current_ws)}" \
+    docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" ${df[@]+"${df[@]}"} "$@"
 }
 
-current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
+# A device door is for a device. Refuse paths that are your computer itself: a "device" that
+# resolves to / (as /Volumes/Macintosh HD does) or to your home would hand over everything.
+device_guard() {
+  local p
+  p="$(cd "$1" 2>/dev/null && pwd -P)" || die "Device mode is on but $1 is not there. Plug the device in (it must be mounted), or run without BOX_DEVICE=1."
+  case "$p" in
+    /|/Users|/Users/*|/home|/home/*|/root|/root/*|/etc|/etc/*|/private/etc|/private/etc/*|/System|/System/*|/Library|/Library/*|/usr|/usr/*|/var/run|/var/run/*|/private/var/run|/private/var/run/*)
+      die "$1 is part of your computer ($p), not a device. The device door mounts removable storage only." ;;
+  esac
+  echo "$p"
+}
+
+# The web-search switch. It lives in .box/policy, which only the gateway can see (read-only).
+# The agent cannot flip it: the guard at door 1 refuses web search unless this file says "on".
+web_switch() {
+  mkdir -p "$STATE/policy"
+  echo "$1" > "$STATE/policy/web"
+}
 
 # The model the agent runs, read from .env (falls back to the compose default).
 current_model() {
   local m=""
   [ -f "$ROOT/.env" ] && m="$(grep -E '^BOX_MODEL=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
   echo "${m:-openrouter/z-ai/glm-5.3}"
-}
-
-# The model to run through OpenRouter's server-side web search: the configured model with
-# an ":online" suffix. The search runs on OpenRouter, not in the box, so no door is opened
-# and every call still shows up in logs/gateway.log.
-online_model() {
-  local m; m="$(current_model)"
-  case "$m" in *:online) echo "$m" ;; *) echo "${m}:online" ;; esac
 }
 
 valid_name() {
@@ -115,13 +135,21 @@ cmd_up() {
   valid_name "$ws" || die "workspace names use letters, digits, dot, dash, underscore"
   mkdir -p "$STATE" "$ROOT/workspaces/$ws" "$ROOT/inbox" "$ROOT/outbox" "$ROOT/logs"
   echo "$ws" > "$WS_FILE"
+  web_switch off   # every start begins with web search off
   # Remember whether this box was brought up with a device mounted, before any compose call.
   echo "${BOX_DEVICE:-0}" > "$STATE/device"
   if device_on; then
     [ -n "${DEVICE_PATH:-}" ] || die "Device mode is on but DEVICE_PATH is not set. Pass DEVICE_PATH=/Volumes/<name> (the mounted device), or run without BOX_DEVICE=1."
-    [ -d "$DEVICE_PATH" ] || die "Device mode is on but $DEVICE_PATH is not there. Plug the device in (it must be mounted), or run without BOX_DEVICE=1."
+    DEVICE_PATH="$(device_guard "$DEVICE_PATH")"
+    DEVICE_MODE=rw; [ "${BOX_DEVICE_RO:-0}" = 1 ] && DEVICE_MODE=ro
+    export DEVICE_PATH DEVICE_MODE
     echo "$DEVICE_PATH" > "$STATE/device-path"
-    echo "Device mode: mounting $DEVICE_PATH as /device (that device's storage only)."
+    echo "$DEVICE_MODE" > "$STATE/device-mode"
+    if [ "$DEVICE_MODE" = ro ]; then
+      echo "Device mode: mounting $DEVICE_PATH as /device, read-only (that device's storage only)."
+    else
+      echo "Device mode: mounting $DEVICE_PATH as /device, read-write (that device's storage only)."
+    fi
   fi
 
   [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
@@ -149,7 +177,10 @@ cmd_status() {
   echo "workspace: workspaces/$(current_ws)"
   if [ -n "$(compose ps -q --status running agent 2>/dev/null)" ]; then
     compose exec -T agent sh -c 'echo "model:     $BOX_MODEL"; echo "opencode:  $(opencode --version)"'
-    compose exec -T agent sh -c '[ -d /device ] && echo "device:    a device is mounted at /device (host storage, read-write)"' 2>/dev/null || true
+    if device_on; then
+      echo "device:    $(cat "$STATE/device-path" 2>/dev/null) is mounted at /device ($(cat "$STATE/device-mode" 2>/dev/null || echo rw))"
+    fi
+    echo "web:       $(cat "$STATE/policy/web" 2>/dev/null || echo off)"
   fi
 }
 
@@ -163,19 +194,22 @@ cmd_run() {
   set -- ${args[@]+"${args[@]}"}
   [ $# -ge 1 ] || die 'usage: box run [--web] "task for the agent"'
   mkdir -p "$ROOT/runs"
-  local stamp out mflag=()
+  local stamp out
   stamp="$(date +%Y%m%d-%H%M%S)-$(current_ws)"
   out="$ROOT/runs/$stamp.jsonl"
+  # The switch is flipped at the guard, outside the box, and flipped back when the run ends.
+  web_switch off
   if [ "$web" = 1 ]; then
-    mflag=( -m "$(online_model)" )
-    echo "web search ON: $(online_model)  (every model call may search; all calls are logged in logs/gateway.log)"
+    trap 'web_switch off' EXIT; trap 'exit 130' INT TERM
+    web_switch on
+    echo "web search ON for this run: the guard at door 1 adds it to every model call (logged with web=on in logs/gateway.log)"
   fi
   # What was asked and of which model, next to the transcript.
   { compose exec -T agent sh -c 'echo "$BOX_MODEL"'
-    [ "$web" = 1 ] && echo "web-search: ON ($(online_model))"
+    [ "$web" = 1 ] && echo "web-search: ON"
     printf '%s\n' "$*"; } > "$ROOT/runs/$stamp.task.txt"
   # --auto: do not stop to ask for permission. The box is the permission system.
-  compose exec -T agent opencode run --auto --format json ${mflag[@]+"${mflag[@]}"} "$@" | tee "$out" | summarize
+  compose exec -T agent opencode run --auto --format json "$@" | tee "$out" | summarize
   echo
   echo "full transcript: ${out#$ROOT/}"
 }
@@ -187,12 +221,84 @@ cmd_code() {
   for a in "$@"; do
     if [ "$a" = "--web" ]; then web=1; else args+=("$a"); fi
   done
-  local mflag=()
+  web_switch off
   if [ "$web" = 1 ]; then
-    mflag=( -m "$(online_model)" )
-    echo "web search ON: $(online_model)  (model calls may search; see logs/gateway.log)"
+    trap 'web_switch off' EXIT; trap 'exit 130' INT TERM
+    web_switch on
+    echo "web search ON until you leave opencode (the guard at door 1 adds it; see logs/gateway.log)"
   fi
-  compose exec agent opencode ${mflag[@]+"${mflag[@]}"} ${args[@]+"${args[@]}"}
+  compose exec agent opencode ${args[@]+"${args[@]}"}
+}
+
+# After changing the opencode version or the model: does the agent still answer through the box?
+cmd_smoke() {
+  need_running
+  local out
+  echo "opencode $(compose exec -T agent opencode --version 2>/dev/null), model $(current_model)"
+  out="$(compose exec -T agent opencode run --auto "Reply with the single word READY and nothing else." 2>&1 </dev/null || true)"
+  if printf '%s' "$out" | grep -q READY; then
+    echo "PASS  the agent answered through the gateway"
+  else
+    echo "FAIL  no answer from the agent. Last lines:"
+    printf '%s\n' "$out" | tail -n 8 | sed 's/^/  /'
+    return 1
+  fi
+}
+
+# box in <file-or-folder>...: copy things into the inbox.
+cmd_in() {
+  [ $# -ge 1 ] || die "usage: box in <file-or-folder>..."
+  mkdir -p "$ROOT/inbox"
+  local f
+  for f in "$@"; do
+    [ -e "$f" ] || die "$f does not exist"
+    [ ! -e "$ROOT/inbox/$(basename "$f")" ] || die "inbox/$(basename "$f") already exists"
+    cp -R "$f" "$ROOT/inbox/"
+    echo "inbox/$(basename "$f")"
+  done
+  echo "The agent sees it at /inbox (read-only). Whatever is there goes to the model provider when the agent reads it."
+}
+
+# box out [folder]: copy the outbox to a folder of yours for review. Regular files only:
+# links are left behind and nothing arrives marked as a program.
+cmd_out() {
+  local base dest
+  base="${1:-$(env_value BOX_HANDOFF_DIR)}"
+  base="${base:-$ROOT/exports}"
+  dest="$base/outbox-$(date +%Y%m%d-%H%M%S)"
+  [ ! -e "$dest" ] || die "$dest already exists"
+  python3 - "$ROOT/outbox" "$dest" <<'EOF'
+import os, shutil, sys
+src, dest = sys.argv[1], sys.argv[2]
+copied, links, execs = 0, [], []
+for folder, dirs, files in os.walk(src, followlinks=False):
+    for name in list(dirs):
+        if os.path.islink(os.path.join(folder, name)):
+            links.append(os.path.relpath(os.path.join(folder, name), src)); dirs.remove(name)
+    for name in files:
+        p = os.path.join(folder, name)
+        rel = os.path.relpath(p, src)
+        if name in (".gitkeep", ".DS_Store"):
+            continue
+        if os.path.islink(p) or not os.path.isfile(p):
+            links.append(rel); continue
+        if os.stat(p).st_mode & 0o111:
+            execs.append(rel)
+        target = os.path.join(dest, rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(p, target)          # contents only: no "program" mark travels along
+        copied += 1
+if not copied:
+    print("The outbox is empty; nothing copied."); sys.exit(0)
+print("Copied %d file(s) to: %s" % (copied, dest))
+show = lambda s: "".join(c if c.isprintable() else "?" for c in s)
+if links:
+    print("Left behind (links; they could point at your own files):")
+    for l in links: print("  " + show(l))
+if execs:
+    print("Were marked as programs in the outbox (copied as plain files; read before you run):")
+    for x in execs: print("  " + show(x))
+EOF
 }
 
 # Turn opencode's JSON event stream into a short readable trace.
@@ -441,11 +547,12 @@ cmd_pr() {
   # 3. Refuse changes to files that run by themselves once they are on GitHub or on your machine.
   mb="$(git -C "$d/clean" merge-base "$branch" "origin/$default")"
   files="$(git -C "$d/clean" diff --name-only "$mb" "$branch")"
-  blocked="$(printf '%s\n' "$files" | grep -E '^"?(\.github|\.claude|\.vscode|\.devcontainer|\.husky|\.githooks)/' || true)"
-  instr="$(printf '%s\n' "$files" | grep -E '(^|/)(CLAUDE\.md|AGENTS\.md|\.cursorrules)"?$' || true)"
+  # Anywhere in the tree, in any letter case (macOS treats .Claude and .claude as one folder).
+  blocked="$(printf '%s\n' "$files" | grep -iE '(^"?|/)((\.github|\.claude|\.vscode|\.devcontainer|\.husky|\.githooks|\.cursor|\.idea)/|(\.mcp\.json|\.envrc|\.gitmodules|\.pre-commit-config\.yaml)"?$)' || true)"
+  instr="$(printf '%s\n' "$files" | grep -iE '(^"?|/)(CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules)"?$' || true)"
   if [ -n "$blocked" ] && [ $allow -eq 0 ]; then
     git -C "$d/clean" branch -q -D "$branch"
-    echo "Refused. These files run automatically (CI workflows, editor and agent settings):" >&2
+    echo "Refused. These files run or load automatically (CI workflows, editor and agent settings, hooks, submodules):" >&2
     printf '%s\n' "$blocked" | sed 's/^/  /' >&2
     die "read them first; if they are fine, repeat with --allow-sensitive"
   fi
@@ -504,8 +611,11 @@ cmd_repo() {
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   up)      cmd_up "$@" ;;
-  start)   cmd_up "$@"; compose exec agent opencode ;;
-  down)    compose down ;;
+  start)   cmd_up "$@"; cmd_code ;;
+  down)    web_switch off; compose down ;;
+  smoke)   cmd_smoke ;;
+  in)      cmd_in "$@" ;;
+  out)     cmd_out "$@" ;;
   reset)   compose down -v; echo "Agent home wiped. Workspaces on disk are untouched." ;;
   status)  cmd_status ;;
   code)    cmd_code "$@" ;;
