@@ -52,7 +52,9 @@ You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) (macO
 WSL 2) or Docker Engine with the Compose plugin (Linux), and an OpenRouter account.
 
 **1. Make a key that cannot hurt you.** On openrouter.ai go to *Keys*, create a new key and set a
-**credit limit** on it (a few dollars is plenty). Use this key for the box and nothing else.
+**credit limit** on it. Use this key for the box and nothing else. The setup this repo is run
+with: a limit of 10 USD that resets weekly, and an expiry date 30 days out, so a forgotten key
+dies on its own.
 
 **2. Start the box.**
 
@@ -179,15 +181,17 @@ an email attachment from a stranger: fine to read, not fine to run unread.
 
 ```text
 $ bin/box logs -f
-2026-11-16T08:28:52+00:00 POST /api/v1/chat/completions status=401 upstream=401 secs=0.048 bytes_in=3053 bytes_out=179
+2026-11-16T08:39:09+00:00 POST /api/v1/chat/completions status=200 upstream=200 secs=13.786 bytes_in=31050 bytes_out=336707
 2026-11-16T08:28:52 TCP_DENIED/403 CONNECT registry.npmjs.org:443 bytes=3766
 2026-11-16T08:29:51 TCP_TUNNEL/200 CONNECT pypi.org:443 bytes=48714129
 ```
 
-The first line is a model call through the gateway (`401` here because no key was set yet; a
-working call shows `200`). The second is the egress proxy refusing a request: opencode itself
-looking for a plugin on the npm registry, which it works fine without. The third is a request
-that was let through after PyPI was put on the allowlist.
+The first line is a model call through the gateway: one step of the agent's work, with how long
+the model took and how much was sent and received. The second is the egress proxy refusing a
+request: opencode itself looking for a plugin on the npm registry, which it works fine without.
+The third is a request that was let through after PyPI was put on the allowlist.
+
+A small task (write a word-count tool with tests, run them, commit) took six model calls.
 
 `box run` saves the agent's complete event stream (every message, tool call and result) as a
 JSON Lines file in `runs/`. That makes the box usable as a small lab: give the same task to
