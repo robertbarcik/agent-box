@@ -282,17 +282,46 @@ cmd_repo_sync() {
   grep -q "$sha" "$d/known" || echo "$sha" >> "$d/known"
 
   # Git on the agent's copy only ever runs inside a container.
-  if docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
+  # Three outcomes, printed as the last line:
+  #   ff     the workspace had nothing of its own; moved forward
+  #   reset  its own commits are already contained in GitHub's branch (typical after
+  #          a squash merge, where GitHub replaces them with one new commit), so
+  #          nothing is lost by dropping them
+  #   keep   it has work GitHub does not have; left untouched
+  local result
+  result="$(docker run --rm --network none --read-only --cap-drop ALL --tmpfs /tmp \
       -v "$ROOT/workspaces/$name:/workspace" -v "$d/clean:/clean:ro" -w /workspace \
       agent-box/agent sh -c '
-        git -c safe.directory="*" fetch -q /clean "refs/remotes/origin/$1:refs/remotes/upstream/$1" &&
-        git merge -q --ff-only "upstream/$1"' sh "$default"; then
-    echo "workspaces/$name is up to date with $(cat "$d/full") ($default)."
-  else
-    echo "GitHub's $default was fetched as upstream/$default, but the workspace has its own commits on top."
-    echo "Decide in 'box shell':   git rebase upstream/$default      keep the agent's commits"
-    echo "                         git reset --hard upstream/$default  drop them (e.g. after a merged pull request)"
-  fi
+        up="upstream/$1"
+        git -c safe.directory="*" fetch -q /clean "refs/remotes/origin/$1:refs/remotes/$up" || { echo fail; exit 0; }
+        if git merge -q --ff-only "$up" 2>/dev/null; then echo ff; exit 0; fi
+        # Uncommitted changes to tracked files would be lost by a reset.
+        if ! git diff --quiet HEAD 2>/dev/null; then echo keep; exit 0; fi
+        # Merge the two in memory. If the result is exactly GitHub'"'"'s tree, the
+        # workspace contributes nothing that GitHub does not already have.
+        merged="$(git merge-tree --write-tree HEAD "$up" 2>/dev/null | head -n 1)" || merged=""
+        if [ -n "$merged" ] && [ "$merged" = "$(git rev-parse "$up^{tree}")" ]; then
+          git reset -q --hard "$up" && echo reset
+        else
+          echo keep
+        fi' sh "$default" </dev/null | tail -n 1)"
+
+  case "$result" in
+    ff)
+      echo "$sha" > "$STATE/baseline-$name"
+      echo "workspaces/$name is up to date with $(cat "$d/full") ($default)." ;;
+    reset)
+      echo "$sha" > "$STATE/baseline-$name"
+      echo "workspaces/$name is up to date with $(cat "$d/full") ($default)."
+      echo "The agent's own commits were already contained in $default (merged pull request), so they were dropped." ;;
+    keep)
+      echo "GitHub's $default was fetched as upstream/$default. The workspace has work of its own that"
+      echo "GitHub does not have, so it was left untouched."
+      echo "Decide in 'box shell':   git rebase upstream/$default        keep that work on top"
+      echo "                         git reset --hard upstream/$default  throw it away" ;;
+    *)
+      die "could not sync workspaces/$name" ;;
+  esac
 }
 
 cmd_repo_remove() {

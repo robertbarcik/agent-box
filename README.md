@@ -180,7 +180,11 @@ Some repositories should never go in: ones with secrets in their history, or wit
 your other tools trust. List them in `.env` as `BOX_NEVER_REPOS=name1,name2` and `repo add`
 will refuse them.
 
-After a pull request is merged, `bin/box repo sync` brings the workspace up to date.
+After a pull request is merged, `bin/box repo sync` brings the workspace up to date. If you
+squash-merged, GitHub replaced the agent's commits with one new commit; sync notices that the
+workspace's own commits contain nothing GitHub does not already have and drops them. If the
+workspace holds work GitHub has not seen, committed or not, sync leaves it untouched and tells
+you.
 
 ### A trusted assistant as supervisor
 
