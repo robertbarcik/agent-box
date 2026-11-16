@@ -299,11 +299,18 @@ done.
 
 Opening a domain on the allowlist lets the *agent's own tools* fetch it, with the risks above.
 There is a narrower option when all you want is for the model to check a current fact: web
-search, turned on per run with `--web`.
+search, turned on per run with `--web`. The same question, off and on:
 
-```bash
-bin/box run --web "Confirm the current Open-Meteo request format and fix the server"
+```text
+$ bin/box run "In one sentence, what is the current latest stable version of GNU bash?"
+NO WEB
+
+$ bin/box run --web "In one sentence, what is the current latest stable version of GNU bash?"
+web search ON: openrouter/z-ai/glm-5.3:online  (every model call may search; logged in logs/gateway.log)
+The latest stable version of GNU bash is 5.3.20 (formulae.brew.sh, freshports.org).
 ```
+
+(The plain run was told to answer `NO WEB` if it could not reach the web — and it could not.)
 
 `--web` runs the model as `<model>:online`, OpenRouter's built-in web search. The search happens
 on OpenRouter's servers, so the box's own walls do not move: the agent's `curl`, `webfetch` and
@@ -311,6 +318,18 @@ package installs still fail, the egress allowlist stays empty, and the `box test
 unchanged (they test the agent's network, which `--web` never touches). Every call still goes
 through the gateway and into `logs/gateway.log`. It is off by default — a plain `box run` has no
 web at all.
+
+You can watch the difference in the logs. During a `--web` run the agent still tries its own
+fetches and is still refused at the egress proxy; the web facts arrive on the model's side,
+through door 1:
+
+```text
+$ bin/box egress        # the agent's own attempt to reach the web: refused
+2026-11-16T12:20:02 TCP_DENIED/403 CONNECT api.open-meteo.com:443
+
+$ bin/box logs          # the model's call through door 1, now carrying search results
+2026-11-16T12:20:27 POST /api/v1/chat/completions status=200 secs=6.8 bytes_in=107161 bytes_out=953
+```
 
 What it does cost you: the model's queries and the pages it reads go to OpenRouter (and its search
 provider), so it is a channel out; a search runs on every model call while it is on, which adds a
