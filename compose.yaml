@@ -1,0 +1,74 @@
+# agent-box: one coding agent, two guarded doors, no other way out.
+#
+#   agent    the coding agent (opencode). Lives only on the "inside" network,
+#            which has no route to the internet or to your home network.
+#   gateway  door 1: forwards model calls to OpenRouter and adds the API key.
+#   egress   door 2: forward proxy that lets through only the domains in
+#            egress/allowlist.txt (empty by default).
+
+name: agent-box
+
+services:
+  agent:
+    build:
+      context: ./agent
+      args:
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
+    image: agent-box/agent
+    init: true
+    command: ["sleep", "infinity"]
+    user: agent
+    working_dir: /workspace
+    environment:
+      # Not a real key. The gateway swaps in the real one on the way out.
+      OPENROUTER_API_KEY: held-by-the-gateway
+      BOX_MODEL: ${BOX_MODEL:-openrouter/z-ai/glm-5.3}
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      NO_PROXY: gateway,localhost,127.0.0.1
+      no_proxy: gateway,localhost,127.0.0.1
+    volumes:
+      # The only piece of your computer the agent can see.
+      - ./workspaces/${BOX_WORKSPACE:-default}:/workspace
+      # The agent's own home (sessions, caches). Lives in Docker, not on your disk.
+      - home:/home/agent
+    tmpfs:
+      - /tmp:exec,size=1g
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: ${BOX_MEMORY:-4g}
+    cpus: ${BOX_CPUS:-4}
+    networks: [inside]
+    depends_on: [gateway, egress]
+
+  gateway:
+    build: ./gateway
+    image: agent-box/gateway
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    networks: [inside, outside]
+    restart: unless-stopped
+
+  egress:
+    build: ./egress
+    image: agent-box/egress
+    volumes:
+      # The folder, not the single file: editors replace a file when saving,
+      # and a single-file mount would keep pointing at the old one.
+      - ./egress:/box-egress:ro
+    networks: [inside, outside]
+    restart: unless-stopped
+
+networks:
+  # internal: true = Docker gives this network no gateway to the outside world.
+  inside:
+    internal: true
+  outside: {}
+
+volumes:
+  home: {}

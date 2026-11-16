@@ -1,0 +1,7 @@
+.env
+.box/
+workspaces/*
+!workspaces/.gitkeep
+runs/
+outbox/
+.DS_Store

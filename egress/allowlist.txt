@@ -1,0 +1,13 @@
+# Domains the box may reach through the egress proxy. One per line.
+# A leading dot also covers subdomains: ".pypi.org" matches pypi.org and files.pypi.org.
+# After editing run:  bin/box reload
+#
+# Empty by default: the agent can talk to the model (through the gateway) and nothing else.
+# Every domain you add is a door. Ask "could data leave through this?" before opening it.
+
+# --- Python packages (pip) ---
+# .pypi.org
+# .pythonhosted.org
+
+# --- JavaScript packages (npm) ---
+# registry.npmjs.org

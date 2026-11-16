@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# box: start, drive, observe and stop the agent-box.
+# Works with the bash that ships with macOS (3.2) and on Linux / WSL.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE="$ROOT/.box"
+WS_FILE="$STATE/workspace"
+
+usage() {
+  cat <<'EOF'
+box: a coding agent in a sandbox
+
+  Start and stop
+    box up [workspace]     build if needed and start the box (default workspace: "default")
+    box down               stop the box (the agent's sessions are kept)
+    box reset              stop the box and wipe the agent's home (sessions, caches)
+    box status             what is running, which workspace, which model
+
+  Work with the agent
+    box code               open the agent's terminal UI (you talk to it directly)
+    box run "task"         give it one task without the UI; transcript saved in runs/
+    box shell              a plain shell inside the box
+
+  Watch it
+    box logs [-f]          every model call and every internet request
+    box egress [-f]        internet requests only (allowed and denied)
+    box test               containment self-test: tries to break out, expects to fail
+
+  Open or close doors
+    box reload             apply changes made to egress/allowlist.txt
+
+  Take results out
+    box diff [-p]          what changed in the workspace since "box up" (-p: full patch)
+    box export [folder]    copy the workspace's plain files to outbox/ for review
+EOF
+}
+
+die() { echo "box: $*" >&2; exit 1; }
+
+compose() { docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" "$@"; }
+
+current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
+
+need_running() {
+  [ -n "$(compose ps -q --status running agent 2>/dev/null)" ] || die "the box is not running. Start it with: box up"
+}
+
+# A fresh, throwaway container with no network that sees the workspace read-only.
+# Used to look at what the agent produced without running anything of it on the host.
+inspector() {
+  docker run --rm -i --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --tmpfs /tmp \
+    -v "$ROOT/workspaces/$(current_ws):/workspace:ro" \
+    -w /workspace agent-box/agent "$@"
+}
+
+cmd_up() {
+  local ws="${1:-$(current_ws)}"
+  case "$ws" in
+    ""|.*|*[!A-Za-z0-9._-]*) die "workspace names use letters, digits, dot, dash, underscore" ;;
+  esac
+  mkdir -p "$STATE" "$ROOT/workspaces/$ws"
+  echo "$ws" > "$WS_FILE"
+
+  [ -f "$ROOT/.env" ] || cp "$ROOT/.env.example" "$ROOT/.env"
+  if ! grep -Eq '^OPENROUTER_API_KEY=.+' "$ROOT/.env"; then
+    echo "note: no OPENROUTER_API_KEY in .env yet. The box starts, but the model will answer 401."
+  fi
+
+  BOX_WORKSPACE="$ws" compose up -d --build --force-recreate agent gateway egress
+
+  # A git baseline, so "box diff" can show exactly what the agent changed.
+  compose exec -T agent sh -c '
+    if [ ! -d .git ]; then git init -q; fi
+    if ! git rev-parse -q --verify HEAD >/dev/null; then
+      git add -A && git commit -q --allow-empty -m "baseline (box up)"
+    fi
+    git rev-parse HEAD' > "$STATE/baseline-$ws"
+
+  echo
+  echo "Box is up. Workspace: workspaces/$ws"
+  echo "Next: box code   (talk to the agent)   |   box test   (check the walls)"
+}
+
+cmd_status() {
+  compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
+  echo "workspace: workspaces/$(current_ws)"
+  if [ -n "$(compose ps -q --status running agent 2>/dev/null)" ]; then
+    compose exec -T agent sh -c 'echo "model:     $BOX_MODEL"; echo "opencode:  $(opencode --version)"'
+  fi
+}
+
+cmd_run() {
+  need_running
+  [ $# -ge 1 ] || die 'usage: box run "task for the agent"'
+  mkdir -p "$ROOT/runs"
+  local out="$ROOT/runs/$(date +%Y%m%d-%H%M%S)-$(current_ws).jsonl"
+  # --auto: do not stop to ask for permission. The box is the permission system.
+  compose exec -T agent opencode run --auto --format json "$@" | tee "$out" | summarize
+  echo
+  echo "full transcript: ${out#$ROOT/}"
+}
+
+# Turn opencode's JSON event stream into a short readable trace.
+summarize() {
+  python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    part = e.get("part") or {}
+    kind = e.get("type")
+    if kind == "text" and part.get("text"):
+        print(part["text"].strip())
+    elif kind == "tool_use":
+        state = part.get("state") or {}
+        inp = state.get("input") or {}
+        hint = inp.get("command") or inp.get("filePath") or inp.get("pattern") or ""
+        print("  [%s] %s" % (part.get("tool", "tool"), str(hint)[:100]))
+    elif kind == "error":
+        print("  [error] %s" % json.dumps(e.get("error", e))[:300])
+' 2>/dev/null || cat
+}
+
+cmd_diff() {
+  local ws base; ws="$(current_ws)"
+  [ -f "$STATE/baseline-$ws" ] || die "no baseline for workspace \"$ws\". Run: box up"
+  base="$(cat "$STATE/baseline-$ws")"
+  if [ "${1:-}" = "-p" ]; then
+    inspector git --no-optional-locks --no-pager diff --no-ext-diff --no-textconv "$base"
+  else
+    echo "Changed since box up (workspace: $ws)"
+    inspector git --no-optional-locks --no-pager diff --no-ext-diff --no-textconv --stat "$base"
+    echo
+    echo "New files not yet added to git:"
+    inspector git --no-optional-locks ls-files --others --exclude-standard | sed 's/^/  /'
+  fi
+}
+
+cmd_export() {
+  local ws dest; ws="$(current_ws)"
+  dest="${1:-$ROOT/outbox/$ws-$(date +%Y%m%d-%H%M%S)}"
+  [ ! -e "$dest" ] || die "$dest already exists"
+  mkdir -p "$dest"
+  # Regular files only: no .git folder, no symlinks, no devices.
+  inspector sh -c 'find . -path ./.git -prune -o -type f -print0 | tar --null --no-recursion -cf - -T -' \
+    | tar -xf - -C "$dest"
+  echo "Copied to: $dest"
+  local links execs
+  links="$(inspector sh -c 'find . -path ./.git -prune -o -type l -printf "  %p -> %l\n"')"
+  execs="$(inspector sh -c 'find . -path ./.git -prune -o -type f -perm /111 -printf "  %p\n"')"
+  if [ -n "$links" ]; then echo "Left behind (symlinks; they could point at your own files):"; echo "$links"; fi
+  if [ -n "$execs" ]; then echo "Marked executable (read before you run):"; echo "$execs"; fi
+}
+
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  up)      cmd_up "$@" ;;
+  down)    compose down ;;
+  reset)   compose down -v; echo "Agent home wiped. Workspaces on disk are untouched." ;;
+  status)  cmd_status ;;
+  code)    need_running; compose exec agent opencode "$@" ;;
+  run)     cmd_run "$@" ;;
+  shell)   need_running; compose exec agent bash ;;
+  logs)    compose logs --no-log-prefix "$@" gateway egress ;;
+  egress)  compose logs --no-log-prefix "$@" egress ;;
+  test)    need_running; compose exec -T agent /opt/agent-box/selftest.sh ;;
+  reload)  compose exec -T egress squid -k reconfigure && echo "allowlist reloaded" ;;
+  diff)    cmd_diff "$@" ;;
+  export)  cmd_export "$@" ;;
+  help|-h|--help) usage ;;
+  *)       usage; exit 1 ;;
+esac
