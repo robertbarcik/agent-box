@@ -45,15 +45,23 @@ workspace or the outbox on the host.
 - Never-grant list is `BOX_NEVER_REPOS` in `.env`. No Drive door, no AWS door (decided
   2026-11-16; the agent builds, the host deploys).
 - Handoff: `bin/box in <file>` copies into the inbox; `bin/box out` copies the outbox to
-  `BOX_HANDOFF_DIR` from `.env`, contents only. On Robert's Macs the review place is the hub's
-  drop folder: `bin/box out /Users/robertbarcik/git-repos/TEMP/agent-box` (Claude never opens
-  `.env`, it holds the key; Robert adds `BOX_HANDOFF_DIR` there himself if he wants the default).
+  `BOX_HANDOFF_DIR` from `.env`, contents only. On this Mac it is set to the hub's drop folder,
+  `git-repos/TEMP/agent-box` (appended to `.env` blind on 2026-11-16; Claude never opens `.env`,
+  it holds the key). On another machine `bin/box out` falls back to `exports/` until it is set.
 - Web search (`--web`) is switched at the gateway via `.box/policy/web`, per run, by the harness.
   Using it is a widening: Robert's yes per task, like a domain. The gateway (`gateway/gateway.py`,
   function `judge`) refuses other models and provider-side tools coming from the agent.
 - Device door: `BOX_DEVICE=1 DEVICE_PATH=... [BOX_DEVICE_RO=1] bin/box up`; a widening.
 - `bin/box report` builds `status.html` from live state. Everything agent-influenced that it
   prints must go through `html.escape`.
+
+## State (closed 2026-11-16)
+
+Feature-complete for its purpose: lecture material plus a rarely-used fallback. Do not grow it.
+Docker images and volumes were removed at close; `bin/box up` rebuilds everything in a few
+minutes (agent sessions start empty). Decided, not done: a trial of Docker Sandboxes (`sbx`,
+a micro-VM per agent) as the tool for real work. It is a separate install and needs a key from
+Robert, so it waits until a real task calls for a stronger wall than a container.
 
 ## Rules when changing it
 
