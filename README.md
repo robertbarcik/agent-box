@@ -32,11 +32,16 @@ flowchart LR
     model(["OpenRouter<br/>the model"])
     net(["Internet"])
 
-    you -- "box code / box run" --> agent
+    you -- "box code / box run (--web)" --> agent
     agent <--> ws
     agent -- "door 1" --> gateway --> model
     agent -- "door 2" --> egress -. "only listed domains" .-> net
+    model -. "web search · --web<br/>runs here, not in the box" .-> net
 ```
+
+The dotted line from the model is web search (`--web`): when you turn it on, OpenRouter searches
+the web on *its* side and hands the results back through door 1. The agent itself still has no
+route out — the box's walls are exactly the same with it on or off.
 
 You do not have to keep this picture in your head. `bin/box report` draws it from the live state
 of your box, with a plain-language pop-up behind every element:
@@ -50,6 +55,10 @@ Three small containers:
 | **agent** | Runs opencode and every command the model decides to run. | Only the two doors below. |
 | **gateway** | Door 1. Forwards model calls to OpenRouter and attaches your API key on the way out. | OpenRouter. |
 | **egress** | Door 2. A proxy that lets through only domains listed in `egress/allowlist.txt`. | Whatever you list. Nothing by default. |
+
+The agent reaches nothing else. The one way to bring in outside facts without opening door 2 is
+`--web`, which lets the *model* search the web on OpenRouter's side — see
+[Letting the model search the web](#letting-the-model-search-the-web).
 
 ## Quick start
 
@@ -112,8 +121,9 @@ bin/box down          # stop
 | `box down` | Stop. The agent's sessions are kept. |
 | `box reset` | Stop and wipe the agent's home (sessions, caches). Workspaces stay. |
 | `box status` | What is running, which workspace, which model. |
-| `box code` | Open opencode's terminal UI inside the box. |
-| `box run "task"` | One task without the UI. Full transcript saved to `runs/`. |
+| `box code [--web]` | Open opencode's terminal UI inside the box. |
+| `box run [--web] "task"` | One task without the UI. Full transcript saved to `runs/`. |
+| `--web` | Let the model search the web for this run (see "Web search", below). |
 | `box shell` | A plain shell inside the box, to look around as the agent would. |
 | `box report` | Build and open `status.html`: what the agent can and cannot do, and what it did. |
 | `box logs [-f]` | Every model call and every internet request, live with `-f`. |
@@ -284,6 +294,28 @@ bin/box egress -f       # watch what goes through
 Every domain you add is a place data can be sent to. A package index is a small risk. A paste
 site, a chat webhook or a general code host is a large one. Close doors again when the task is
 done.
+
+### Letting the model search the web
+
+Opening a domain on the allowlist lets the *agent's own tools* fetch it, with the risks above.
+There is a narrower option when all you want is for the model to check a current fact: web
+search, turned on per run with `--web`.
+
+```bash
+bin/box run --web "Confirm the current Open-Meteo request format and fix the server"
+```
+
+`--web` runs the model as `<model>:online`, OpenRouter's built-in web search. The search happens
+on OpenRouter's servers, so the box's own walls do not move: the agent's `curl`, `webfetch` and
+package installs still fail, the egress allowlist stays empty, and the `box test` checks are
+unchanged (they test the agent's network, which `--web` never touches). Every call still goes
+through the gateway and into `logs/gateway.log`. It is off by default — a plain `box run` has no
+web at all.
+
+What it does cost you: the model's queries and the pages it reads go to OpenRouter (and its search
+provider), so it is a channel out; a search runs on every model call while it is on, which adds a
+little to the bill; and whatever the web returns is untrusted text the model now reads, so weigh
+its answers accordingly. Use it for fact-checking during research, not as a standing default.
 
 ## Getting work out safely
 

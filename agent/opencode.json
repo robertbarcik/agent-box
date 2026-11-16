@@ -13,6 +13,16 @@
     "openrouter": {
       "options": {
         "baseURL": "http://gateway:8080/api/v1"
+      },
+      "models": {
+        "z-ai/glm-5.3": {
+          "limit": { "context": 1048576, "output": 96000 },
+          "options": { "reasoning": { "effort": "low" } }
+        },
+        "z-ai/glm-5.3:online": {
+          "limit": { "context": 1048576, "output": 96000 },
+          "options": { "reasoning": { "effort": "low" } }
+        }
       }
     }
   }

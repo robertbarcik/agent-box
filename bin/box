@@ -19,9 +19,10 @@ box: a coding agent in a sandbox
     box status             what is running, which workspace, which model
 
   Work with the agent
-    box code               open the agent's terminal UI (you talk to it directly)
-    box run "task"         give it one task without the UI; transcript saved in runs/
+    box code [--web]       open the agent's terminal UI (you talk to it directly)
+    box run [--web] "task" give it one task without the UI; transcript saved in runs/
     box shell              a plain shell inside the box
+    --web                  let the model search the web (OpenRouter server-side; logged)
 
   See what it can do and what it did
     box report             build status.html: what the agent can and cannot do, what it did
@@ -54,6 +55,21 @@ die() { echo "box: $*" >&2; exit 1; }
 compose() { docker compose --project-directory "$ROOT" -f "$ROOT/compose.yaml" "$@"; }
 
 current_ws() { if [ -f "$WS_FILE" ]; then cat "$WS_FILE"; else echo default; fi; }
+
+# The model the agent runs, read from .env (falls back to the compose default).
+current_model() {
+  local m=""
+  [ -f "$ROOT/.env" ] && m="$(grep -E '^BOX_MODEL=' "$ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-)"
+  echo "${m:-openrouter/z-ai/glm-5.3}"
+}
+
+# The model to run through OpenRouter's server-side web search: the configured model with
+# an ":online" suffix. The search runs on OpenRouter, not in the box, so no door is opened
+# and every call still shows up in logs/gateway.log.
+online_model() {
+  local m; m="$(current_model)"
+  case "$m" in *:online) echo "$m" ;; *) echo "${m}:online" ;; esac
+}
 
 valid_name() {
   case "$1" in
@@ -116,17 +132,44 @@ cmd_status() {
 
 cmd_run() {
   need_running
-  [ $# -ge 1 ] || die 'usage: box run "task for the agent"'
+  # --web turns on OpenRouter's server-side web search for this run only.
+  local web=0 args=()
+  for a in "$@"; do
+    if [ "$a" = "--web" ]; then web=1; else args+=("$a"); fi
+  done
+  set -- ${args[@]+"${args[@]}"}
+  [ $# -ge 1 ] || die 'usage: box run [--web] "task for the agent"'
   mkdir -p "$ROOT/runs"
-  local stamp out
+  local stamp out mflag=()
   stamp="$(date +%Y%m%d-%H%M%S)-$(current_ws)"
   out="$ROOT/runs/$stamp.jsonl"
+  if [ "$web" = 1 ]; then
+    mflag=( -m "$(online_model)" )
+    echo "web search ON: $(online_model)  (every model call may search; all calls are logged in logs/gateway.log)"
+  fi
   # What was asked and of which model, next to the transcript.
-  { compose exec -T agent sh -c 'echo "$BOX_MODEL"'; printf '%s\n' "$*"; } > "$ROOT/runs/$stamp.task.txt"
+  { compose exec -T agent sh -c 'echo "$BOX_MODEL"'
+    [ "$web" = 1 ] && echo "web-search: ON ($(online_model))"
+    printf '%s\n' "$*"; } > "$ROOT/runs/$stamp.task.txt"
   # --auto: do not stop to ask for permission. The box is the permission system.
-  compose exec -T agent opencode run --auto --format json "$@" | tee "$out" | summarize
+  compose exec -T agent opencode run --auto --format json ${mflag[@]+"${mflag[@]}"} "$@" | tee "$out" | summarize
   echo
   echo "full transcript: ${out#$ROOT/}"
+}
+
+# Open the agent's terminal UI, optionally with web search on (box code [--web]).
+cmd_code() {
+  need_running
+  local web=0 args=()
+  for a in "$@"; do
+    if [ "$a" = "--web" ]; then web=1; else args+=("$a"); fi
+  done
+  local mflag=()
+  if [ "$web" = 1 ]; then
+    mflag=( -m "$(online_model)" )
+    echo "web search ON: $(online_model)  (model calls may search; see logs/gateway.log)"
+  fi
+  compose exec agent opencode ${mflag[@]+"${mflag[@]}"} ${args[@]+"${args[@]}"}
 }
 
 # Turn opencode's JSON event stream into a short readable trace.
@@ -442,7 +485,7 @@ case "$cmd" in
   down)    compose down ;;
   reset)   compose down -v; echo "Agent home wiped. Workspaces on disk are untouched." ;;
   status)  cmd_status ;;
-  code)    need_running; compose exec agent opencode "$@" ;;
+  code)    cmd_code "$@" ;;
   run)     cmd_run "$@" ;;
   shell)   need_running; compose exec agent bash ;;
   report)  python3 "$ROOT/lib/report.py" "$@" ;;

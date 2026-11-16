@@ -309,7 +309,11 @@ EXPLAIN = {
         "So the key stays with a guard. The agent hands its message to the guard, the guard "
         "attaches the key and passes it on. The agent uses the key without ever seeing it.",
         "The guard also refuses anything that is not a conversation with the model, such as "
-        "questions about your account."], "bin/box logs"),
+        "questions about your account.",
+        "If you start the agent with web search on (box run --web), the model may look things up "
+        "on the web while it answers. That search runs at OpenRouter, not in the box, and comes "
+        "back through this same door, so the walls do not change: the agent still has no way onto "
+        "the internet itself. It is off unless you ask for it."], "bin/box logs"),
     "model": ("The model", [
         "The model runs at a company on the internet, reached through OpenRouter. It never runs on "
         "your computer.",
